@@ -16,11 +16,33 @@ interface OrderSuggestion {
 }
 
 export default function OrderSuggestionSystem() {
+  interface HealthResponse {
+    ok?: boolean;
+    tokenOk?: boolean;
+    accountsBase?: string;
+    inventoryBase?: string;
+    booksBase?: string;
+    itemsCount?: number;
+    provider?: string;
+    error?: string;
+    detail?: string;
+  }
   const [suggestions, setSuggestions] = useState<OrderSuggestion[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<number>(0);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [adminOpen, setAdminOpen] = useState<boolean>(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const [jobProgress, setJobProgress] = useState<number>(0);
+  const [autoRunning, setAutoRunning] = useState<boolean>(false);
+  const [months, setMonths] = useState<number>(6);
+  const ADMIN_TOKEN = (process.env.NEXT_PUBLIC_PRECOMPUTE_ADMIN_TOKEN as string | undefined) || '';
   // Function URL: prefer env, fallback to declared constant
   const DEFAULT_FUNCTION_URL = 'https://ordersuggest-903975067.development.catalystserverless.com/server/order_suggest_function';
   const functionUrl = (process.env.NEXT_PUBLIC_CATALYST_FUNCTION_URL as string | undefined) || DEFAULT_FUNCTION_URL;
@@ -35,10 +57,39 @@ export default function OrderSuggestionSystem() {
       }
       setLoading(true);
       setError(null);
+      setIsRefreshing(true);
+      // naive client-side progress indicator (0 → 90% until completion)
+      setProgress(0);
+      let p = 0;
+      const inc = () => {
+        p = Math.min(90, p + Math.max(1, Math.round((90 - p) * 0.08)));
+        setProgress(p);
+      };
+      const progTimer = setInterval(inc, 400);
+      // Fire-and-forget health probe
+      (async () => {
+        try {
+          const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
+          const healthUrl = `${base}/healthz`;
+          const resp = await fetch(healthUrl, { method: 'GET', mode: 'cors', credentials: 'omit', headers: { 'Accept': 'application/json' } });
+          if (resp.ok) {
+            const data: HealthResponse = await resp.json();
+            setHealth(data);
+            setHealthError(null);
+          } else {
+            setHealth(null);
+            setHealthError(`Health check failed: ${resp.status}`);
+          }
+        } catch (e: unknown) {
+          setHealth(null);
+          const msg = e instanceof Error ? e.message : 'Health check failed';
+          setHealthError(msg);
+        }
+      })();
       try {
         const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
-        const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
-        const url = `${sug}?live=1&months=6`;
+  const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
+  const url = `${sug}?months=6`;
         const resp = await fetch(url, {
           method: 'GET',
           mode: 'cors',
@@ -54,13 +105,22 @@ export default function OrderSuggestionSystem() {
           }
         }
         const data = await resp.json();
-        setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
+        if (resp.status === 202) {
+          setSuggestions([]);
+          setError(data?.message || 'No precomputed suggestions yet. Use the Admin Panel to start precompute.');
+        } else {
+          setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
+        }
+        setProgress(100);
       } catch (err) {
         setSuggestions([]);
         const msg = err instanceof Error ? err.message : 'Failed to fetch live suggestions';
         setError(msg);
       } finally {
+        clearInterval(progTimer);
         setLoading(false);
+        // allow the bar to linger briefly at 100%
+        setTimeout(() => setIsRefreshing(false), 400);
       }
     };
     fetchLive();
@@ -110,6 +170,169 @@ export default function OrderSuggestionSystem() {
             {/* Connection info */}
             <div className="mb-4 p-3 rounded border border-blue-200 bg-blue-50 text-blue-900">
               Using function URL: {functionUrl}
+              {health && (
+                <div className="mt-2 text-sm grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {health.provider && (
+                    <div>
+                      <span className="font-semibold">Provider:</span> {health.provider}
+                    </div>
+                  )}
+                  <div>
+                    <span className="font-semibold">Token:</span> {health.tokenOk ? 'OK' : 'Not OK'}
+                  </div>
+                  {health.accountsBase && (
+                    <div>
+                      <span className="font-semibold">Accounts:</span> {health.accountsBase}
+                    </div>
+                  )}
+                  {health.inventoryBase && (
+                    <div>
+                      <span className="font-semibold">Inventory:</span> {health.inventoryBase}
+                    </div>
+                  )}
+                  {health.booksBase && (
+                    <div>
+                      <span className="font-semibold">Books:</span> {health.booksBase}
+                    </div>
+                  )}
+                  {typeof health.itemsCount === 'number' && (
+                    <div>
+                      <span className="font-semibold">Items Probe:</span> {health.itemsCount}
+                    </div>
+                  )}
+                </div>
+              )}
+              {healthError && (
+                <div className="mt-2 text-sm text-red-700">
+                  {healthError}
+                </div>
+              )}
+            </div>
+
+            {/* Progress indicator */}
+            {isRefreshing && (
+              <div className="mb-4 bg-white border border-gray-200 rounded shadow p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm text-gray-700">Preparing live suggestions…</div>
+                  <div className="text-sm text-gray-600">{progress}%</div>
+                </div>
+                <div className="w-full bg-gray-100 rounded h-2 overflow-hidden">
+                  <div className="bg-blue-600 h-2 transition-all" style={{ width: `${progress}%` }} />
+                </div>
+                <div className="text-xs text-gray-500 mt-2">This can take a minute on first run while we aggregate sales from Zoho Books.</div>
+              </div>
+            )}
+
+            {/* Admin Panel */}
+            <div className="mb-6 bg-white rounded-lg shadow border border-gray-200">
+              <button
+                onClick={() => setAdminOpen(v => !v)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left"
+              >
+                <span className="font-medium text-gray-900">Admin Panel: Precompute Suggestions</span>
+                <span className="text-sm text-gray-500">{adminOpen ? 'Hide' : 'Show'}</span>
+              </button>
+              {adminOpen && (
+                <div className="px-4 pb-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Months</label>
+                      <input type="number" min={1} max={24} value={months}
+                        onChange={(e) => setMonths(Number(e.target.value))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          try {
+                            if (!functionUrl) throw new Error('Function URL missing');
+                            const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
+                            const url = `${base}/precompute/start`;
+                            const resp = await fetch(url, {
+                              method: 'POST',
+                              headers: {
+                                'Content-Type': 'application/json',
+                                ...(ADMIN_TOKEN ? { 'x-admin-token': ADMIN_TOKEN } : {})
+                              },
+                              body: JSON.stringify({ months })
+                            });
+                            const data = await resp.json();
+                            if (!resp.ok) throw new Error(data?.error || 'Failed to start precompute');
+                            setJobId(data.job_id);
+                            setJobStatus('queued');
+                            setJobProgress(0);
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : 'Failed to start precompute');
+                          }
+                        }}
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+                      >Start Precompute</button>
+                      <button
+                        onClick={async () => {
+                          if (!jobId) { setError('Start a job first'); return; }
+                          try {
+                            if (!functionUrl) throw new Error('Function URL missing');
+                            const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
+                            const url = `${base}/precompute/run?job_id=${encodeURIComponent(jobId)}`;
+                            const resp = await fetch(url, { method: 'POST', headers: { ...(ADMIN_TOKEN ? { 'x-admin-token': ADMIN_TOKEN } : {}) } });
+                            const data = await resp.json();
+                            if (!resp.ok) throw new Error(data?.error || 'Run failed');
+                            setJobStatus(data.status);
+                            setJobProgress(Number(data.progress || 0));
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : 'Failed to run precompute');
+                          }
+                        }}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                      >Run Chunk</button>
+                      <button
+                        onClick={async () => {
+                          if (!jobId) { setError('Start a job first'); return; }
+                          setAutoRunning(true);
+                          try {
+                            const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
+                            while (true) {
+                              const runUrl = `${base}/precompute/run?job_id=${encodeURIComponent(jobId)}`;
+                              const resp = await fetch(runUrl, { method: 'POST', headers: { ...(ADMIN_TOKEN ? { 'x-admin-token': ADMIN_TOKEN } : {}) } });
+                              const data = await resp.json();
+                              if (!resp.ok) throw new Error(data?.error || 'Run failed');
+                              setJobStatus(data.status);
+                              setJobProgress(Number(data.progress || 0));
+                              if (data.status === 'done' || Number(data.progress || 0) >= 100) break;
+                              await new Promise(r => setTimeout(r, 1500));
+                            }
+                            // Refresh suggestions upon completion
+                            setIsRefreshing(true);
+                            setProgress(0);
+                            const sugUrl = `${base}/suggestions?months=${months}`;
+                            const sresp = await fetch(sugUrl, { headers: { 'Accept': 'application/json' } });
+                            const sdata = await sresp.json();
+                            setSuggestions((sdata && (sdata.suggestions || sdata.data || [])) as OrderSuggestion[]);
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : 'Failed to auto precompute');
+                          } finally {
+                            setAutoRunning(false);
+                            setIsRefreshing(false);
+                          }
+                        }}
+                        className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+                        disabled={!jobId || autoRunning}
+                      >Auto Run Until Done</button>
+                    </div>
+                  </div>
+                  {jobId && (
+                    <div className="mt-4">
+                      <div className="text-sm text-gray-700">Job: <span className="font-mono">{jobId}</span> — Status: <span className="font-semibold">{jobStatus || 'unknown'}</span></div>
+                      <div className="w-full bg-gray-100 rounded h-2 mt-2 overflow-hidden">
+                        <div className="bg-indigo-600 h-2 transition-all" style={{ width: `${jobProgress}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {ADMIN_TOKEN && (
+                    <div className="mt-2 text-xs text-gray-500">Admin token header attached.</div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Error banner */}
@@ -180,11 +403,19 @@ export default function OrderSuggestionSystem() {
                     onClick={async () => {
                       setLoading(true);
                       setError(null);
+                      setIsRefreshing(true);
+                      setProgress(0);
+                      let p = 0;
+                      const inc = () => {
+                        p = Math.min(90, p + Math.max(1, Math.round((90 - p) * 0.08)));
+                        setProgress(p);
+                      };
+                      const progTimer = setInterval(inc, 400);
                       try {
                         if (!functionUrl) throw new Error('Set the Catalyst Function URL to fetch live data.');
                         const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
                         const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
-                        const url = `${sug}?live=1&months=6`;
+                        const url = `${sug}?months=6`;
                         const resp = await fetch(url, {
                           method: 'GET',
                           mode: 'cors',
@@ -200,13 +431,21 @@ export default function OrderSuggestionSystem() {
                           }
                         }
                         const data = await resp.json();
-                        setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
+                        if (resp.status === 202) {
+                          setSuggestions([]);
+                          setError(data?.message || 'No precomputed suggestions yet. Use the Admin Panel to start precompute.');
+                        } else {
+                          setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
+                        }
+                        setProgress(100);
                       } catch (err) {
                         setSuggestions([]);
                         const msg = err instanceof Error ? err.message : 'Failed to fetch live suggestions';
                         setError(msg);
                       } finally {
+                        clearInterval(progTimer);
                         setLoading(false);
+                        setTimeout(() => setIsRefreshing(false), 400);
                       }
                     }}
                     className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
