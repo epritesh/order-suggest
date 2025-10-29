@@ -1,21 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 
-interface SKUData {
-  sku: string;
-  description: string;
-  currentStock: number;
-  reorderPoint: number;
-  maxStock: number;
-  avgMonthlySales: number;
-  lastSale: string;
-  lastSupplied: string;
-  supplier: string;
-  unitCost: number;
-  category: string;
-  salesTrend: 'increasing' | 'decreasing' | 'stable';
-}
+// Live data only — no local sample dataset
 
 interface OrderSuggestion {
   sku: string;
@@ -29,9 +16,9 @@ interface OrderSuggestion {
 }
 
 export default function OrderSuggestionSystem() {
-  const [skuData, setSkuData] = useState<SKUData[]>([]);
   const [suggestions, setSuggestions] = useState<OrderSuggestion[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
   // Resolve Catalyst Function URL at runtime with fallbacks:
@@ -65,160 +52,38 @@ export default function OrderSuggestionSystem() {
     }
   }, [functionUrl]);
 
-  // Filter out SKUs that begin with 0-, 800-, and 2000-
-  const filterOrderableSKUs = (data: SKUData[]): SKUData[] => {
-    return data.filter(item => {
-      const sku = item.sku.toLowerCase();
-      return !sku.startsWith('0-') && 
-             !sku.startsWith('800-') && 
-             !sku.startsWith('2000-');
-    });
-  };
-
-  // Calculate order suggestions based on sales trend and stock levels
-  const calculateOrderSuggestions = useCallback((data: SKUData[]): OrderSuggestion[] => {
-    const orderableData = filterOrderableSKUs(data);
-    
-    return orderableData.map(item => {
-      let suggestedQuantity = 0;
-      let priority: 'high' | 'medium' | 'low' = 'low';
-      let reason = '';
-      
-      const stockRatio = item.currentStock / item.maxStock;
-      const monthlySalesRate = item.avgMonthlySales / 30; // Daily sales rate
-      const daysUntilStockout = item.currentStock / Math.max(monthlySalesRate, 0.1);
-      
-      // Determine priority and quantity based on multiple factors
-      if (item.currentStock <= item.reorderPoint) {
-        priority = 'high';
-        // Calculate quantity to reach optimal stock level (80% of max)
-        const targetStock = item.maxStock * 0.8;
-        suggestedQuantity = Math.max(0, targetStock - item.currentStock);
-        
-        if (item.salesTrend === 'increasing') {
-          suggestedQuantity *= 1.2; // Increase by 20% for growing demand
-          reason = 'Below reorder point with increasing sales trend';
-        } else if (item.salesTrend === 'decreasing') {
-          suggestedQuantity *= 0.8; // Decrease by 20% for declining demand
-          reason = 'Below reorder point but declining sales trend';
-        } else {
-          reason = 'Below reorder point';
-        }
-      } else if (stockRatio < 0.3 && item.salesTrend === 'increasing') {
-        priority = 'medium';
-        const targetStock = item.maxStock * 0.6;
-        suggestedQuantity = Math.max(0, targetStock - item.currentStock);
-        reason = 'Low stock with increasing demand';
-      } else if (daysUntilStockout < 14 && item.avgMonthlySales > 0) {
-        priority = 'medium';
-        // Order enough for 30 days plus buffer
-        suggestedQuantity = Math.max(0, (item.avgMonthlySales * 1.1) - item.currentStock);
-        reason = 'Will run out of stock within 2 weeks';
-      } else if (stockRatio < 0.2) {
-        priority = 'low';
-        const targetStock = item.maxStock * 0.4;
-        suggestedQuantity = Math.max(0, targetStock - item.currentStock);
-        reason = 'Low stock level';
-      }
-
-      // Round to reasonable quantities
-      suggestedQuantity = Math.round(suggestedQuantity);
-      
-      return {
-        sku: item.sku,
-        description: item.description,
-        currentStock: item.currentStock,
-        suggestedQuantity,
-        priority,
-        reason,
-        estimatedCost: suggestedQuantity * item.unitCost,
-        daysUntilStockout: Math.round(daysUntilStockout)
-      };
-    }).filter(suggestion => suggestion.suggestedQuantity > 0)
-      .sort((a, b) => {
-        const priorityOrder = { 'high': 3, 'medium': 2, 'low': 1 };
-        return priorityOrder[b.priority] - priorityOrder[a.priority];
-      });
-  }, []);
-
+  // Fetch live suggestions whenever the function URL is set/changed
   useEffect(() => {
-    // Mock data for demonstration
-    const mockSKUData: SKUData[] = [
-      {
-        sku: 'GHI-789',
-        description: 'Tool C - Professional Grade',
-        currentStock: 35,
-        reorderPoint: 10,
-        maxStock: 50,
-        avgMonthlySales: 8,
-        lastSale: '2024-10-20',
-        lastSupplied: '2024-10-01',
-        supplier: 'Tool Masters',
-        unitCost: 45.00,
-        category: 'Tools',
-        salesTrend: 'decreasing'
-      },
-      {
-        sku: '0-PROMO',
-        description: 'Promotional Item - Should be filtered',
-        currentStock: 100,
-        reorderPoint: 50,
-        maxStock: 200,
-        avgMonthlySales: 30,
-        lastSale: '2024-10-28',
-        lastSupplied: '2024-10-15',
-        supplier: 'Promo Co',
-        unitCost: 2.00,
-        category: 'Promotional',
-        salesTrend: 'stable'
-      },
-      {
-        sku: '800-SERVICE',
-        description: 'Service Item - Should be filtered',
-        currentStock: 0,
-        reorderPoint: 0,
-        maxStock: 0,
-        avgMonthlySales: 0,
-        lastSale: '2024-10-28',
-        lastSupplied: '2024-10-15',
-        supplier: 'Service Co',
-        unitCost: 0,
-        category: 'Service',
-        salesTrend: 'stable'
+    const fetchLive = async () => {
+      if (!functionUrl) {
+        setSuggestions([]);
+        setLoading(false);
+        return;
       }
-    ];
-
-    // Simulate loading data
-    setLoading(true);
-    setTimeout(() => {
-      setSkuData(mockSKUData);
-      // If a Catalyst Function URL is provided, fetch from it; otherwise, compute locally
-      const init = async () => {
-        try {
-          if (functionUrl) {
-            const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
-            const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
-            const url = `${sug}?live=1&months=6`;
-            const resp = await fetch(url, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ months: 6 })
-            });
-            const data = await resp.json();
-            setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
-          } else {
-            setSuggestions(calculateOrderSuggestions(mockSKUData));
-          }
-        } catch (e) {
-          // Fallback to local calculation on error
-          setSuggestions(calculateOrderSuggestions(mockSKUData));
-        } finally {
-          setLoading(false);
-        }
-      };
-      init();
-    }, 1000);
-  }, [calculateOrderSuggestions, functionUrl]);
+      setLoading(true);
+      setError(null);
+      try {
+        const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
+        const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
+        const url = `${sug}?live=1&months=6`;
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ months: 6 })
+        });
+        if (!resp.ok) throw new Error(`Live fetch failed: ${resp.status}`);
+        const data = await resp.json();
+        setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
+      } catch (err) {
+        setSuggestions([]);
+        const msg = err instanceof Error ? err.message : 'Failed to fetch live suggestions';
+        setError(msg);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchLive();
+  }, [functionUrl]);
 
   // Filter suggestions based on search and filters
   const filteredSuggestions = suggestions.filter(suggestion => {
@@ -278,7 +143,7 @@ export default function OrderSuggestionSystem() {
                   {functionUrl ? (
                     <span>Live mode active. Suggestions fetched from function.</span>
                   ) : (
-                    <span>No function URL set. Using local calculation.</span>
+                    <span>No function URL set. Enter a function URL to enable live data.</span>
                   )}
                 </p>
               </div>
@@ -306,6 +171,13 @@ export default function OrderSuggestionSystem() {
                 </button>
               </div>
             </div>
+
+            {/* Error banner */}
+            {error && (
+              <div className="mb-4 p-3 rounded border border-red-200 bg-red-50 text-red-800">
+                {error}
+              </div>
+            )}
 
             {/* Summary Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -367,28 +239,30 @@ export default function OrderSuggestionSystem() {
                   <button
                     onClick={async () => {
                       setLoading(true);
+                      setError(null);
                       try {
-                        if (functionUrl) {
-                          const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
-                          const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
-                          const url = `${sug}?live=1&months=6`;
-                          const resp = await fetch(url, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ months: 6 })
-                          });
-                          const data = await resp.json();
-                          setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
-                        } else {
-                          setSuggestions(calculateOrderSuggestions(skuData));
-                        }
-                      } catch (e) {
-                        setSuggestions(calculateOrderSuggestions(skuData));
+                        if (!functionUrl) throw new Error('Set the Catalyst Function URL to fetch live data.');
+                        const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
+                        const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
+                        const url = `${sug}?live=1&months=6`;
+                        const resp = await fetch(url, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ months: 6 })
+                        });
+                        if (!resp.ok) throw new Error(`Live fetch failed: ${resp.status}`);
+                        const data = await resp.json();
+                        setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
+                      } catch (err) {
+                        setSuggestions([]);
+                        const msg = err instanceof Error ? err.message : 'Failed to fetch live suggestions';
+                        setError(msg);
                       } finally {
                         setLoading(false);
                       }
                     }}
                     className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!functionUrl}
                   >
                     Refresh Suggestions
                   </button>
