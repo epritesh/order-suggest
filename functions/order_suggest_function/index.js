@@ -11,15 +11,40 @@ app.use(express.json());
 // CORS: allow Slate origin (or configured origin)
 // Supports comma-separated list in ALLOWED_ORIGIN, e.g., "https://a.com,https://b.com"
 const allowedOriginEnv = process.env.ALLOWED_ORIGIN || process.env.NEXT_PUBLIC_APP_URL || '*';
-const allowedOrigins = allowedOriginEnv.split(',').map(o => o.trim()).filter(Boolean);
+const rawOrigins = allowedOriginEnv.split(',').map(o => o.trim()).filter(Boolean);
+
+// Build matchers supporting exact and wildcard (e.g., https://*.onslate.com)
+const allowedOrigins = rawOrigins.map((entry) => {
+	const val = entry.replace(/\/$/, ''); // strip trailing slash
+	if (val === '*') return { type: 'star', value: '*' };
+	if (val.includes('*')) {
+		// convert https://*.domain.com to regex
+		const esc = val
+			.replace(/[.*+?^${}()|[\]\\]/g, r => `\\${r}`)
+			.replace(/\\\*/g, '.*');
+		return { type: 'wildcard', value: val, regex: new RegExp(`^${esc}$`, 'i') };
+	}
+	return { type: 'exact', value: val.toLowerCase() };
+});
+
+function isOriginAllowed(origin) {
+	if (!origin) return true; // server-to-server
+	const o = origin.replace(/\/$/, '');
+	for (const rule of allowedOrigins) {
+		if (rule.type === 'star') return true;
+		if (rule.type === 'exact' && rule.value === o.toLowerCase()) return true;
+		if (rule.type === 'wildcard' && rule.regex && rule.regex.test(o)) return true;
+	}
+	return false;
+}
 
 // Prefer explicit, robust CORS handling to avoid proxy quirks
-const credentialsEnabled = !allowedOrigins.includes('*');
+const credentialsEnabled = !allowedOrigins.some(r => r.type === 'star');
 
 // Minimal manual CORS headers (in addition to cors package) to guarantee ACAO
 app.use((req, res, next) => {
-	const origin = req.headers.origin;
-	if (allowedOrigins.includes('*')) {
+		const origin = req.headers.origin && String(req.headers.origin);
+		if (allowedOrigins.some(r => r.type === 'star')) {
 		// reflect origin when available, else wildcard
 		if (origin) {
 			res.setHeader('Access-Control-Allow-Origin', origin);
@@ -28,7 +53,7 @@ app.use((req, res, next) => {
 			res.setHeader('Access-Control-Allow-Origin', '*');
 		}
 		res.setHeader('Access-Control-Allow-Credentials', 'false');
-	} else if (origin && allowedOrigins.includes(origin)) {
+		} else if (origin && isOriginAllowed(origin)) {
 		res.setHeader('Access-Control-Allow-Origin', origin);
 		res.setHeader('Vary', 'Origin');
 		res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -43,12 +68,12 @@ app.use((req, res, next) => {
 
 // Also apply cors library as a secondary safety net
 app.use(cors({
-	origin: (origin, callback) => {
-		if (!origin) return callback(null, true);
-		if (allowedOrigins.includes('*')) return callback(null, true);
-		const ok = allowedOrigins.includes(origin);
-		return callback(ok ? null : new Error('Origin not allowed by CORS'), ok);
-	},
+		origin: (origin, callback) => {
+			if (!origin) return callback(null, true);
+			if (allowedOrigins.some(r => r.type === 'star')) return callback(null, true);
+			const ok = isOriginAllowed(origin);
+			return callback(ok ? null : new Error('Origin not allowed by CORS'), ok);
+		},
 	credentials: credentialsEnabled,
 	methods: ['GET', 'POST', 'OPTIONS'],
 	allowedHeaders: ['Content-Type', 'Authorization'],
