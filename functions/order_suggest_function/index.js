@@ -378,6 +378,58 @@ app.post('/suggestions', async (req, res) => {
 	}
 });
 
+// Support GET to avoid CORS preflight in browsers (no custom headers/body)
+app.get('/suggestions', async (req, res) => {
+	try {
+		try { catalyst.initialize(req); } catch (e) {}
+
+		// live path only for GET
+		const months = Number(req.query && req.query.months || 6);
+		const live = String(req.query && req.query.live || '1');
+		if (live !== '0' && live.toLowerCase() !== 'false') {
+			try {
+				const token = await getZohoAccessToken();
+				const orgId = process.env.ZOHO_ORG_ID;
+				const inventoryBase = process.env.ZOHO_INVENTORY_BASE;
+				if (!orgId) {
+					return res.status(400).json({ error: 'Missing ZOHO_ORG_ID in environment' });
+				}
+				const from = new Date();
+				from.setMonth(from.getMonth() - months);
+				const fromDate = from.toISOString().slice(0, 10);
+				const toDate = new Date().toISOString().slice(0, 10);
+				const skus = undefined; // GET does not accept body; pass via query in future if needed
+
+				const items = await fetchAllInventoryItems({ token, orgId, base: inventoryBase, skus });
+				const limited = items.slice(0, Math.min(items.length, 100));
+				const normalized = await withConcurrency(limited, 5, async (it) => {
+					const sales = await fetchItemSalesHistory({ token, orgId, base: inventoryBase, itemId: it.item_id, fromDate, toDate });
+					const trend = calcTrendAndAvgMonthly(sales);
+					return normalizeItem(it, trend);
+				});
+				const filtered = filterOrderableSKUs(normalized);
+				const suggestions = calculateOrderSuggestions(filtered);
+				const stats = {
+					totalSuggestions: suggestions.length,
+					high: suggestions.filter(s => s.priority === 'high').length,
+					medium: suggestions.filter(s => s.priority === 'medium').length,
+					low: suggestions.filter(s => s.priority === 'low').length,
+					totalEstimatedCost: Number(suggestions.reduce((sum, s) => sum + s.estimatedCost, 0).toFixed(2))
+				};
+				return res.json({ success: true, suggestions, stats, source: 'live' });
+			} catch (liveErr) {
+				console.error('Live fetch error (GET):', liveErr);
+				return res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.' });
+			}
+		}
+
+		return res.status(400).json({ error: 'GET /suggestions supports only live mode' });
+	} catch (err) {
+		console.error('Suggestion GET error:', err);
+		res.status(500).json({ error: 'Internal server error' });
+	}
+});
+
 	// Live normalization only (no suggestions) if needed
 	app.post('/fetch-live', async (req, res) => {
 		try {

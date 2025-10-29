@@ -40,11 +40,10 @@ export default function OrderSuggestionSystem() {
         const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
         const url = `${sug}?live=1&months=6`;
         const resp = await fetch(url, {
-          method: 'POST',
+          method: 'GET',
           mode: 'cors',
           credentials: 'omit',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify({ months: 6 })
+          headers: { 'Accept': 'application/json' }
         });
         if (!resp.ok) throw new Error(`Live fetch failed: ${resp.status}`);
         const data = await resp.json();
@@ -180,11 +179,10 @@ export default function OrderSuggestionSystem() {
                         const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
                         const url = `${sug}?live=1&months=6`;
                         const resp = await fetch(url, {
-                          method: 'POST',
+                          method: 'GET',
                           mode: 'cors',
                           credentials: 'omit',
-                          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                          body: JSON.stringify({ months: 6 })
+                          headers: { 'Accept': 'application/json' }
                         });
                         if (!resp.ok) throw new Error(`Live fetch failed: ${resp.status}`);
                         const data = await resp.json();
