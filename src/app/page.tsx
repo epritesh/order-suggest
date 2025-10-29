@@ -34,7 +34,31 @@ export default function OrderSuggestionSystem() {
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
-  const catalystFunctionUrl = process.env.NEXT_PUBLIC_CATALYST_FUNCTION_URL as string | undefined;
+  // Resolve Catalyst Function URL at runtime with fallbacks:
+  // 1) NEXT_PUBLIC_CATALYST_FUNCTION_URL (build-time)
+  // 2) ?functionUrl=... query param (persisted to localStorage)
+  // 3) localStorage key 'order_suggest_function_url'
+  const [functionUrl, setFunctionUrl] = useState<string | undefined>(
+    (process.env.NEXT_PUBLIC_CATALYST_FUNCTION_URL as string | undefined)
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const url = new URL(window.location.href);
+      const fromQuery = url.searchParams.get('functionUrl') || url.searchParams.get('function_url') || url.searchParams.get('fn');
+      if (fromQuery && fromQuery.startsWith('http')) {
+        localStorage.setItem('order_suggest_function_url', fromQuery);
+        setFunctionUrl(fromQuery);
+        return;
+      }
+      if (!functionUrl) {
+        const fromLS = localStorage.getItem('order_suggest_function_url') || undefined;
+        if (fromLS) setFunctionUrl(fromLS);
+      }
+    } catch {
+      // ignore
+    }
+  }, [functionUrl]);
 
   // Filter out SKUs that begin with 0-, 800-, and 2000-
   const filterOrderableSKUs = (data: SKUData[]): SKUData[] => {
@@ -194,8 +218,8 @@ export default function OrderSuggestionSystem() {
       // If a Catalyst Function URL is provided, fetch from it; otherwise, compute locally
       const init = async () => {
         try {
-          if (catalystFunctionUrl) {
-            const base = catalystFunctionUrl.endsWith('/') ? catalystFunctionUrl.slice(0, -1) : catalystFunctionUrl;
+          if (functionUrl) {
+            const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
             const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
             const url = `${sug}?live=1&months=6`;
             const resp = await fetch(url, {
@@ -217,7 +241,7 @@ export default function OrderSuggestionSystem() {
       };
       init();
     }, 1000);
-  }, [calculateOrderSuggestions, catalystFunctionUrl]);
+  }, [calculateOrderSuggestions, functionUrl]);
 
   // Filter suggestions based on search and filters
   const filteredSuggestions = suggestions.filter(suggestion => {
@@ -321,8 +345,8 @@ export default function OrderSuggestionSystem() {
                     onClick={async () => {
                       setLoading(true);
                       try {
-                        if (catalystFunctionUrl) {
-                          const base = catalystFunctionUrl.endsWith('/') ? catalystFunctionUrl.slice(0, -1) : catalystFunctionUrl;
+                        if (functionUrl) {
+                          const base = functionUrl.endsWith('/') ? functionUrl.slice(0, -1) : functionUrl;
                           const sug = base.match(/\/suggestions$/) ? base : `${base}/suggestions`;
                           const url = `${sug}?live=1&months=6`;
                           const resp = await fetch(url, {
