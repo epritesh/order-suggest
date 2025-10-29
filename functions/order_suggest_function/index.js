@@ -10,7 +10,8 @@ app.use(express.json());
 
 // CORS: allow Slate origin (or configured origin)
 // Supports comma-separated list in ALLOWED_ORIGIN, e.g., "https://a.com,https://b.com"
-const allowedOriginEnv = process.env.ALLOWED_ORIGIN || process.env.NEXT_PUBLIC_APP_URL || '*';
+// Default to allow all onslate subdomains
+const allowedOriginEnv = process.env.ALLOWED_ORIGIN || 'https://*.onslate.com';
 const rawOrigins = allowedOriginEnv.split(',').map(o => o.trim()).filter(Boolean);
 
 // Build matchers supporting exact and wildcard (e.g., https://*.onslate.com)

@@ -41,7 +41,9 @@ export default function OrderSuggestionSystem() {
         const url = `${sug}?live=1&months=6`;
         const resp = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          mode: 'cors',
+          credentials: 'omit',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ months: 6 })
         });
         if (!resp.ok) throw new Error(`Live fetch failed: ${resp.status}`);
@@ -179,7 +181,9 @@ export default function OrderSuggestionSystem() {
                         const url = `${sug}?live=1&months=6`;
                         const resp = await fetch(url, {
                           method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
+                          mode: 'cors',
+                          credentials: 'omit',
+                          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                           body: JSON.stringify({ months: 6 })
                         });
                         if (!resp.ok) throw new Error(`Live fetch failed: ${resp.status}`);
