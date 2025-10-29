@@ -13,21 +13,48 @@ app.use(express.json());
 const allowedOriginEnv = process.env.ALLOWED_ORIGIN || process.env.NEXT_PUBLIC_APP_URL || '*';
 const allowedOrigins = allowedOriginEnv.split(',').map(o => o.trim()).filter(Boolean);
 
-const corsOptions = {
-	origin: function (origin, callback) {
-		// If no origin (server-to-server) or wildcard, allow
-		if (!origin || allowedOrigins.includes('*')) {
-			return callback(null, true);
-		}
-		// Exact match against configured origins
-		const allowed = allowedOrigins.includes(origin);
-		callback(allowed ? null : new Error('Origin not allowed by CORS'), allowed);
-	},
-	credentials: allowedOrigins.includes('*') ? false : true
-};
+// Prefer explicit, robust CORS handling to avoid proxy quirks
+const credentialsEnabled = !allowedOrigins.includes('*');
 
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+// Minimal manual CORS headers (in addition to cors package) to guarantee ACAO
+app.use((req, res, next) => {
+	const origin = req.headers.origin;
+	if (allowedOrigins.includes('*')) {
+		// reflect origin when available, else wildcard
+		if (origin) {
+			res.setHeader('Access-Control-Allow-Origin', origin);
+			res.setHeader('Vary', 'Origin');
+		} else {
+			res.setHeader('Access-Control-Allow-Origin', '*');
+		}
+		res.setHeader('Access-Control-Allow-Credentials', 'false');
+	} else if (origin && allowedOrigins.includes(origin)) {
+		res.setHeader('Access-Control-Allow-Origin', origin);
+		res.setHeader('Vary', 'Origin');
+		res.setHeader('Access-Control-Allow-Credentials', 'true');
+	}
+	res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+	res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+	if (req.method === 'OPTIONS') {
+		return res.status(204).end();
+	}
+	next();
+});
+
+// Also apply cors library as a secondary safety net
+app.use(cors({
+	origin: (origin, callback) => {
+		if (!origin) return callback(null, true);
+		if (allowedOrigins.includes('*')) return callback(null, true);
+		const ok = allowedOrigins.includes(origin);
+		return callback(ok ? null : new Error('Origin not allowed by CORS'), ok);
+	},
+	credentials: credentialsEnabled,
+	methods: ['GET', 'POST', 'OPTIONS'],
+	allowedHeaders: ['Content-Type', 'Authorization'],
+	optionsSuccessStatus: 204
+}));
+app.options('*', cors());
 
 // Health check
 app.get('/', (_req, res) => {
