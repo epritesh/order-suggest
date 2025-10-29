@@ -145,34 +145,6 @@ export default function OrderSuggestionSystem() {
     // Mock data for demonstration
     const mockSKUData: SKUData[] = [
       {
-        sku: 'ABC-123',
-        description: 'Widget A - Premium Quality',
-        currentStock: 15,
-        reorderPoint: 20,
-        maxStock: 100,
-        avgMonthlySales: 25,
-        lastSale: '2024-10-25',
-        lastSupplied: '2024-09-15',
-        supplier: 'Supplier XYZ',
-        unitCost: 12.50,
-        category: 'Electronics',
-        salesTrend: 'increasing'
-      },
-      {
-        sku: 'DEF-456',
-        description: 'Component B - Standard',
-        currentStock: 5,
-        reorderPoint: 15,
-        maxStock: 75,
-        avgMonthlySales: 18,
-        lastSale: '2024-10-28',
-        lastSupplied: '2024-08-20',
-        supplier: 'Parts Inc',
-        unitCost: 8.75,
-        category: 'Components',
-        salesTrend: 'stable'
-      },
-      {
         sku: 'GHI-789',
         description: 'Tool C - Professional Grade',
         currentStock: 35,
