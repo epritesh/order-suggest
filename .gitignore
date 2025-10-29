@@ -1,7 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+# ignore node_modules at any level
+node_modules/
 /.pnp
 .pnp.js
 .yarn/install-state.gz
@@ -35,3 +36,8 @@ self_client.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# OpenAPI docs (local only; do not commit)
+docs/openapi-*/
+docs/openapi-books/
+docs/openapi-inventory/
