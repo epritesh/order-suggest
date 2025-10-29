@@ -114,6 +114,39 @@ app.get('/healthz', async (_req, res) => {
 	}
 });
 
+// Inventory probe: attempts a light items fetch to validate scopes and org wiring
+app.get('/healthz/inventory', async (_req, res) => {
+	const result = {
+		ok: false,
+		accountsBase: process.env.ZOHO_ACCOUNTS_BASE || 'https://accounts.zoho.com',
+		inventoryBase: process.env.ZOHO_INVENTORY_BASE || 'https://inventory.zoho.com/api/v1',
+		orgIdPresent: Boolean(process.env.ZOHO_ORG_ID),
+		itemsCount: 0,
+		error: undefined
+	};
+	try {
+		const token = await getZohoAccessToken();
+		const orgId = process.env.ZOHO_ORG_ID;
+		if (!orgId) return res.status(400).json({ ...result, error: 'Missing ZOHO_ORG_ID' });
+		const base = process.env.ZOHO_INVENTORY_BASE;
+		const url = `${base || 'https://inventory.zoho.com/api/v1'}/items?per_page=5&page=1`;
+		const resp = await fetch(url, { headers: inventoryHeaders(token, orgId) });
+		const text = await resp.text();
+		if (!resp.ok) {
+			result.error = `Fetch items failed: ${resp.status} ${text.slice(0,300)}`;
+			return res.status(502).json(result);
+		}
+		const json = JSON.parse(text);
+		const pageItems = (json.items || []).filter(it => it.track_inventory !== false);
+		result.ok = true;
+		result.itemsCount = pageItems.length;
+		return res.json(result);
+	} catch (e) {
+		result.error = e && e.message ? String(e.message) : 'inventory probe error';
+		return res.status(502).json(result);
+	}
+});
+
 // ===== Zoho helpers (OAuth + fetch) =====
 const tokenCache = { accessToken: null, expiry: 0 };
 
