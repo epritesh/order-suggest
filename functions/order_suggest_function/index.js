@@ -413,7 +413,8 @@ app.post('/suggestions', async (req, res) => {
 				return res.json({ success: true, suggestions, stats, source: 'live' });
 			} catch (liveErr) {
 				console.error('Live fetch error:', liveErr);
-				return res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.' });
+							const detail = (liveErr && liveErr.message) ? String(liveErr.message) : undefined;
+							return res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.', detail });
 			}
 		}
 
@@ -478,8 +479,9 @@ app.get('/suggestions', async (req, res) => {
 				};
 				return res.json({ success: true, suggestions, stats, source: 'live' });
 			} catch (liveErr) {
-				console.error('Live fetch error (GET):', liveErr);
-				return res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.' });
+						console.error('Live fetch error (GET):', liveErr);
+						const detail = (liveErr && liveErr.message) ? String(liveErr.message) : undefined;
+						return res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.', detail });
 			}
 		}
 
@@ -517,7 +519,8 @@ app.get('/suggestions', async (req, res) => {
 			res.json({ skuData: filtered, months });
 		} catch (err) {
 			console.error('fetch-live error:', err);
-			res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.' });
+			const detail = (err && err.message) ? String(err.message) : undefined;
+			res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.', detail });
 		}
 	});
 

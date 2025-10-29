@@ -45,7 +45,14 @@ export default function OrderSuggestionSystem() {
           credentials: 'omit',
           headers: { 'Accept': 'application/json' }
         });
-        if (!resp.ok) throw new Error(`Live fetch failed: ${resp.status}`);
+        if (!resp.ok) {
+          try {
+            const err = await resp.json();
+            throw new Error(err?.detail || err?.error || `Live fetch failed: ${resp.status}`);
+          } catch {
+            throw new Error(`Live fetch failed: ${resp.status}`);
+          }
+        }
         const data = await resp.json();
         setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
       } catch (err) {
@@ -184,7 +191,14 @@ export default function OrderSuggestionSystem() {
                           credentials: 'omit',
                           headers: { 'Accept': 'application/json' }
                         });
-                        if (!resp.ok) throw new Error(`Live fetch failed: ${resp.status}`);
+                        if (!resp.ok) {
+                          try {
+                            const err = await resp.json();
+                            throw new Error(err?.detail || err?.error || `Live fetch failed: ${resp.status}`);
+                          } catch {
+                            throw new Error(`Live fetch failed: ${resp.status}`);
+                          }
+                        }
                         const data = await resp.json();
                         setSuggestions((data && (data.suggestions || data.data || [])) as OrderSuggestion[]);
                       } catch (err) {
