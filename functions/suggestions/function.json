@@ -1,6 +1,0 @@
-{
-  "name": "suggestions",
-  "type": "advancedio",
-  "runtime": "node18",
-  "handler": "index.js"
-}

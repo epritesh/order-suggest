@@ -21,8 +21,9 @@ export default function OrderSuggestionSystem() {
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
-  // Function URL from env only (no runtime overrides)
-  const functionUrl = process.env.NEXT_PUBLIC_CATALYST_FUNCTION_URL as string | undefined;
+  // Function URL: prefer env, fallback to declared constant
+  const DEFAULT_FUNCTION_URL = 'https://ordersuggest-903975067.development.catalystserverless.com/server/order_suggest_function';
+  const functionUrl = (process.env.NEXT_PUBLIC_CATALYST_FUNCTION_URL as string | undefined) || DEFAULT_FUNCTION_URL;
 
   // Fetch live suggestions whenever the function URL is set/changed
   useEffect(() => {
@@ -99,11 +100,9 @@ export default function OrderSuggestionSystem() {
         ) : (
           <>
             {/* Connection info */}
-            {!functionUrl && (
-              <div className="mb-4 p-3 rounded border border-amber-200 bg-amber-50 text-amber-900">
-                NEXT_PUBLIC_CATALYST_FUNCTION_URL is not set. Configure it to enable live data.
-              </div>
-            )}
+            <div className="mb-4 p-3 rounded border border-blue-200 bg-blue-50 text-blue-900">
+              Using function URL: {functionUrl}
+            </div>
 
             {/* Error banner */}
             {error && (
@@ -195,7 +194,6 @@ export default function OrderSuggestionSystem() {
                       }
                     }}
                     className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    disabled={!functionUrl}
                   >
                     Refresh Suggestions
                   </button>
