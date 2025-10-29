@@ -21,36 +21,8 @@ export default function OrderSuggestionSystem() {
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
-  // Resolve Catalyst Function URL at runtime with fallbacks:
-  // 1) NEXT_PUBLIC_CATALYST_FUNCTION_URL (build-time)
-  // 2) ?functionUrl=... query param (persisted to localStorage)
-  // 3) localStorage key 'order_suggest_function_url'
-  const [functionUrl, setFunctionUrl] = useState<string | undefined>(
-    (process.env.NEXT_PUBLIC_CATALYST_FUNCTION_URL as string | undefined)
-  );
-  const [functionUrlDraft, setFunctionUrlDraft] = useState<string>('');
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const url = new URL(window.location.href);
-      const fromQuery = url.searchParams.get('functionUrl') || url.searchParams.get('function_url') || url.searchParams.get('fn');
-      if (fromQuery && fromQuery.startsWith('http')) {
-        localStorage.setItem('order_suggest_function_url', fromQuery);
-        setFunctionUrl(fromQuery);
-        setFunctionUrlDraft(fromQuery);
-        return;
-      }
-      if (!functionUrl) {
-        const fromLS = localStorage.getItem('order_suggest_function_url') || undefined;
-        if (fromLS) {
-          setFunctionUrl(fromLS);
-          setFunctionUrlDraft(fromLS);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }, [functionUrl]);
+  // Function URL from env only (no runtime overrides)
+  const functionUrl = process.env.NEXT_PUBLIC_CATALYST_FUNCTION_URL as string | undefined;
 
   // Fetch live suggestions whenever the function URL is set/changed
   useEffect(() => {
@@ -126,51 +98,12 @@ export default function OrderSuggestionSystem() {
           </div>
         ) : (
           <>
-            {/* Connection Bar */}
-            <div className="bg-white p-3 rounded-lg shadow mb-6 flex flex-col md:flex-row md:items-end md:space-x-3 space-y-3 md:space-y-0">
-              <div className="flex-1">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Catalyst Function URL
-                </label>
-                <input
-                  type="url"
-                  value={functionUrlDraft}
-                  onChange={(e) => setFunctionUrlDraft(e.target.value)}
-                  placeholder="https://<domain>/server/order_suggest_function"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  {functionUrl ? (
-                    <span>Live mode active. Suggestions fetched from function.</span>
-                  ) : (
-                    <span>No function URL set. Enter a function URL to enable live data.</span>
-                  )}
-                </p>
+            {/* Connection info */}
+            {!functionUrl && (
+              <div className="mb-4 p-3 rounded border border-amber-200 bg-amber-50 text-amber-900">
+                NEXT_PUBLIC_CATALYST_FUNCTION_URL is not set. Configure it to enable live data.
               </div>
-              <div className="flex space-x-2">
-                <button
-                  onClick={() => {
-                    if (functionUrlDraft && functionUrlDraft.startsWith('http')) {
-                      localStorage.setItem('order_suggest_function_url', functionUrlDraft);
-                      setFunctionUrl(functionUrlDraft);
-                    }
-                  }}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  Save URL
-                </button>
-                <button
-                  onClick={() => {
-                    localStorage.removeItem('order_suggest_function_url');
-                    setFunctionUrl(undefined);
-                    setFunctionUrlDraft('');
-                  }}
-                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-400"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
+            )}
 
             {/* Error banner */}
             {error && (
