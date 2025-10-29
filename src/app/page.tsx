@@ -41,6 +41,7 @@ export default function OrderSuggestionSystem() {
   const [functionUrl, setFunctionUrl] = useState<string | undefined>(
     (process.env.NEXT_PUBLIC_CATALYST_FUNCTION_URL as string | undefined)
   );
+  const [functionUrlDraft, setFunctionUrlDraft] = useState<string>('');
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -49,11 +50,15 @@ export default function OrderSuggestionSystem() {
       if (fromQuery && fromQuery.startsWith('http')) {
         localStorage.setItem('order_suggest_function_url', fromQuery);
         setFunctionUrl(fromQuery);
+        setFunctionUrlDraft(fromQuery);
         return;
       }
       if (!functionUrl) {
         const fromLS = localStorage.getItem('order_suggest_function_url') || undefined;
-        if (fromLS) setFunctionUrl(fromLS);
+        if (fromLS) {
+          setFunctionUrl(fromLS);
+          setFunctionUrlDraft(fromLS);
+        }
       }
     } catch {
       // ignore
@@ -284,6 +289,52 @@ export default function OrderSuggestionSystem() {
           </div>
         ) : (
           <>
+            {/* Connection Bar */}
+            <div className="bg-white p-3 rounded-lg shadow mb-6 flex flex-col md:flex-row md:items-end md:space-x-3 space-y-3 md:space-y-0">
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Catalyst Function URL
+                </label>
+                <input
+                  type="url"
+                  value={functionUrlDraft}
+                  onChange={(e) => setFunctionUrlDraft(e.target.value)}
+                  placeholder="https://<domain>/server/order_suggest_function"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  {functionUrl ? (
+                    <span>Live mode active. Suggestions fetched from function.</span>
+                  ) : (
+                    <span>No function URL set. Using local calculation.</span>
+                  )}
+                </p>
+              </div>
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => {
+                    if (functionUrlDraft && functionUrlDraft.startsWith('http')) {
+                      localStorage.setItem('order_suggest_function_url', functionUrlDraft);
+                      setFunctionUrl(functionUrlDraft);
+                    }
+                  }}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  Save URL
+                </button>
+                <button
+                  onClick={() => {
+                    localStorage.removeItem('order_suggest_function_url');
+                    setFunctionUrl(undefined);
+                    setFunctionUrlDraft('');
+                  }}
+                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-400"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
             {/* Summary Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
               <div className="bg-white p-4 rounded-lg shadow">
