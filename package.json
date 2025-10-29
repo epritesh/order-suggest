@@ -1,8 +1,9 @@
 {
-  "name": "nextjs-starter-template",
-  "version": "0.1.0",
+  "name": "order-suggest",
+  "version": "1.0.0",
   "private": true,
-  "author": "muthaiyanmani",
+  "description": "AI-powered purchase order quantity suggestions for Zoho Slate App",
+  "author": "Pantera Team",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

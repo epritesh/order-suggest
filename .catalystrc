@@ -1,0 +1,38 @@
+{
+  "defaults": {
+    "project": 1,
+    "env": 1
+  },
+  "actives": {
+    "project": 1,
+    "env": 1
+  },
+  "projects": [
+    {
+      "idx": 1,
+      "id": "45178000000015358",
+      "name": "OrderSuggest",
+      "domain": {
+        "id": "10108843177",
+        "name": "ordersuggest-903975067.development"
+      },
+      "timezone": "America/Detroit",
+      "env": [
+        {
+          "idx": 1,
+          "id": "903975067",
+          "name": "Development",
+          "type": 3,
+          "env_status": "Active",
+          "project_details": {
+            "project_name": "OrderSuggest",
+            "id": "45178000000015358",
+            "project_type": "Live"
+          },
+          "is_default": true,
+          "action_required": false
+        }
+      ]
+    }
+  ]
+}

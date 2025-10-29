@@ -1,0 +1,19 @@
+{
+	"functions": {
+		"source": "functions",
+		"targets": [
+			"order_suggest_function"
+		]
+	},
+	"features": {
+		"functions": [
+			{
+				"name": "order_suggest_function",
+				"type": "advancedio",
+				"runtime": "node20",
+				"handler": "index.js",
+				"root_dir": "functions/order_suggest_function"
+			}
+		]
+	}
+}

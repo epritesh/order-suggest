@@ -1,0 +1,61 @@
+{
+  "name": "Order Suggestion System",
+  "description": "AI-powered purchase order quantity suggestions based on sales trends and stock levels",
+  "version": "1.0.0",
+  "author": "Pantera Team",
+  "type": "widget",
+  "hosting": "external",
+  "permissions": [
+    "ZohoInventory.items.READ",
+    "ZohoInventory.reports.READ",
+    "ZohoInventory.purchaseorders.CREATE",
+    "ZohoInventory.salesorders.READ"
+  ],
+  "modules": [
+    "inventory"
+  ],
+  "locations": [
+    "inventory.item.detailpage",
+    "inventory.dashboard"
+  ],
+  "settings": {
+    "width": "100%",
+    "height": "600px",
+    "resize": true
+  },
+  "configuration": {
+    "fields": [
+      {
+        "name": "api_endpoint",
+        "label": "API Endpoint",
+        "type": "text",
+        "required": true,
+        "default": "https://your-app-domain.com"
+      },
+      {
+        "name": "refresh_interval",
+        "label": "Auto Refresh Interval (minutes)",
+        "type": "number",
+        "required": false,
+        "default": 15
+      },
+      {
+        "name": "high_priority_threshold",
+        "label": "High Priority Threshold (%)",
+        "type": "number",
+        "required": false,
+        "default": 80
+      }
+    ]
+  },
+  "webhooks": [
+    {
+      "event": "inventory.item.create",
+      "url": "{{api_endpoint}}/api/webhooks/item-created"
+    },
+    {
+      "event": "inventory.item.update",
+      "url": "{{api_endpoint}}/api/webhooks/item-updated"
+    }
+  ]
+}

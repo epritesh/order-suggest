@@ -1,0 +1,18 @@
+{
+	"deployment": {
+		"name": "order_suggest_function",
+		"stack": "node20",
+		"type": "advancedio",
+		"env_variables": {
+			"ZOHO_DC": "us",
+			"ZOHO_ORG_ID": "815317243",
+			"ZOHO_CLIENT_ID": "1000.DEXK0C1QIOOITD3Z9Y0CMTKGJB49WH",
+			"ZOHO_CLIENT_SECRET": "cb0daa8ae4e22a515c1678bbc1defa96d376ffda8b",
+			"ZOHO_REFRESH_TOKEN": "1000.b6dcf63898d6d13496793e3485080376.13e8df86b8e4d68486cd8737ac4be82b",
+			"ALLOWED_ORIGIN": "https://ordersuggest-uztpzhml.onslate.com"
+		}
+	},
+	"execution": {
+		"main": "index.js"
+	}
+}
