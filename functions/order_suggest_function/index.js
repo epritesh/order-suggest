@@ -91,6 +91,29 @@ app.get('/', (_req, res) => {
 	res.json({ ok: true, service: 'order-suggestions', time: new Date().toISOString() });
 });
 
+// Extended health check: validates Zoho token acquisition and env wiring
+app.get('/healthz', async (_req, res) => {
+	const info = {
+		ok: true,
+		service: 'order-suggestions',
+		time: new Date().toISOString(),
+		accountsBase: process.env.ZOHO_ACCOUNTS_BASE || 'https://accounts.zoho.com',
+		inventoryBase: process.env.ZOHO_INVENTORY_BASE || 'https://inventory.zoho.com/api/v1',
+		orgIdPresent: Boolean(process.env.ZOHO_ORG_ID),
+		tokenOk: false,
+		error: undefined
+	};
+	try {
+		const token = await getZohoAccessToken();
+		info.tokenOk = Boolean(token);
+		return res.json(info);
+	} catch (e) {
+		info.tokenOk = false;
+		info.error = e && e.message ? String(e.message) : 'token error';
+		return res.status(502).json(info);
+	}
+});
+
 // ===== Zoho helpers (OAuth + fetch) =====
 const tokenCache = { accessToken: null, expiry: 0 };
 
