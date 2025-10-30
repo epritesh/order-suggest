@@ -2,19 +2,7 @@
 	"deployment": {
 		"name": "order_suggest_function",
 		"stack": "node14",
-		"type": "advancedio",
-		"env_variables": {
-			"ZOHO_DC": "us",
-			"ZOHO_ORG_ID": "815317243",
-			"ZOHO_CLIENT_ID": "1000.DEXK0C1QIOOITD3Z9Y0CMTKGJB49WH",
-			"ZOHO_ACCOUNTS_BASE": "https://accounts.zoho.com",
-			"ZOHO_INVENTORY_BASE": "https://inventory.zoho.com/api/v1",
-			"ZOHO_BOOKS_BASE": "https://www.zohoapis.com/books/v3",
-			"ZOHO_SOURCE": "books",
-			"ALLOWED_ORIGIN": "https://order-suggest.onslate.com",
-			"SUGGESTIONS_TABLE": "order_suggestions",
-			"JOBS_TABLE": "precompute_jobs"
-		}
+		"type": "advancedio"
 	},
 	"execution": {
 		"main": "index.js"
