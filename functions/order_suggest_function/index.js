@@ -193,6 +193,35 @@ app.get('/healthz/books', async (_req, res) => {
 // ===== Zoho helpers (OAuth + fetch) =====
 const tokenCache = { accessToken: null, expiry: 0 };
 
+function sleep(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(url, options, { retries = 3, backoffMs = 300 } = {}) {
+	let attempt = 0;
+	let lastErr;
+	while (attempt <= retries) {
+		try {
+			const resp = await fetch(url, options);
+			if (resp.status === 429 || (resp.status >= 500 && resp.status < 600)) {
+				// retryable
+				const delay = backoffMs * Math.pow(2, attempt) + Math.floor(Math.random() * 100);
+				await sleep(delay);
+				attempt += 1;
+				lastErr = new Error(`HTTP ${resp.status}`);
+				continue;
+			}
+			return resp;
+		} catch (e) {
+			lastErr = e;
+			const delay = backoffMs * Math.pow(2, attempt) + Math.floor(Math.random() * 100);
+			await sleep(delay);
+			attempt += 1;
+		}
+	}
+	throw lastErr || new Error('fetch failed');
+}
+
 async function getZohoAccessToken() {
 	const refreshToken = process.env.ZOHO_REFRESH_TOKEN;
 	const clientId = process.env.ZOHO_CLIENT_ID;
@@ -302,7 +331,7 @@ async function fetchAllBooksItems({ token, orgId, base, perPage = 200, skus }) {
 	const baseUrl = base || 'https://www.zohoapis.com/books/v3';
 	while (true) {
 		const url = `${baseUrl}/items?organization_id=${encodeURIComponent(orgId)}&per_page=${perPage}&page=${page}`;
-		const resp = await fetch(url, { headers: booksHeaders(token, orgId) });
+	const resp = await fetchWithRetry(url, { headers: booksHeaders(token, orgId) });
 		if (!resp.ok) {
 			const txt = await resp.text().catch(() => '');
 			throw new Error(`Books items fetch failed: ${resp.status} ${txt}`);
@@ -321,10 +350,36 @@ async function fetchAllBooksItems({ token, orgId, base, perPage = 200, skus }) {
 	return items;
 }
 
+// Fetch only a specific range of Books items using page math to avoid fetching all items repeatedly
+async function fetchBooksItemsPagedRange({ token, orgId, base, start = 0, count = 20, perPage = 200 }) {
+	const items = [];
+	const baseUrl = base || 'https://www.zohoapis.com/books/v3';
+	const startPage = Math.floor(start / perPage) + 1;
+	const endIndex = start + count; // exclusive
+	const endPage = Math.floor((endIndex - 1) / perPage) + 1;
+	for (let page = startPage; page <= endPage; page++) {
+		const url = `${baseUrl}/items?organization_id=${encodeURIComponent(orgId)}&per_page=${perPage}&page=${page}`;
+		const resp = await fetchWithRetry(url, { headers: booksHeaders(token, orgId) });
+		if (!resp.ok) {
+			const txt = await resp.text().catch(() => '');
+			throw new Error(`Books items page fetch failed: ${resp.status} ${txt}`);
+		}
+		const data = await resp.json();
+		const pageItems = Array.isArray(data.items) ? data.items : [];
+		items.push(...pageItems);
+		const pc = data.page_context || {};
+		if (!pc.has_more_page && page < endPage) {
+			break; // fewer pages than expected
+		}
+	}
+	const offsetInFirstPage = start % perPage;
+	return items.slice(offsetInFirstPage, offsetInFirstPage + count);
+}
+
 async function fetchBooksItemDetail({ token, orgId, base, itemId }) {
 	const baseUrl = base || 'https://www.zohoapis.com/books/v3';
 	const url = `${baseUrl}/items/${encodeURIComponent(itemId)}?organization_id=${encodeURIComponent(orgId)}`;
-	const resp = await fetch(url, { headers: booksHeaders(token, orgId) });
+	const resp = await fetchWithRetry(url, { headers: booksHeaders(token, orgId) });
 	if (!resp.ok) {
 		const txt = await resp.text().catch(() => '');
 		throw new Error(`Books item detail fetch failed: ${resp.status} ${txt}`);
@@ -343,7 +398,7 @@ function weekStart(dateStr) {
 	return d.toISOString().slice(0, 10);
 }
 
-async function fetchItemSalesHistoryBooks({ token, orgId, base, itemId, fromDate, toDate }) {
+async function fetchItemSalesHistoryBooks({ token, orgId, base, itemId, fromDate, toDate, maxPages = 12 }) {
 	const baseUrl = base || 'https://www.zohoapis.com/books/v3';
 	const params = new URLSearchParams({
 		organization_id: String(orgId),
@@ -358,7 +413,7 @@ async function fetchItemSalesHistoryBooks({ token, orgId, base, itemId, fromDate
 	while (true) {
 		params.set('page', String(page));
 		const url = `${baseUrl}/invoices?${params.toString()}`;
-		const resp = await fetch(url, { headers: booksHeaders(token, orgId) });
+	const resp = await fetchWithRetry(url, { headers: booksHeaders(token, orgId) });
 		if (!resp.ok) {
 			// If invoices not accessible, return empty and let caller handle
 			return { sales_history: [] };
@@ -366,32 +421,34 @@ async function fetchItemSalesHistoryBooks({ token, orgId, base, itemId, fromDate
 		const data = await resp.json();
 		const list = Array.isArray(data.invoices) ? data.invoices : [];
 		if (list.length === 0) break;
-		// For each invoice, fetch details to get line items and quantities
-		for (const inv of list) {
+		// Fetch invoice details in parallel with limited concurrency
+		const results = await withConcurrency(list, 4, async (inv) => {
 			const invId = inv && (inv.invoice_id || inv.invoiceId || inv.id);
-			if (!invId) continue;
+			if (!invId) return null;
 			const invUrl = `${baseUrl}/invoices/${encodeURIComponent(invId)}?organization_id=${encodeURIComponent(orgId)}`;
-			const invResp = await fetch(invUrl, { headers: booksHeaders(token, orgId) });
-			if (!invResp.ok) continue;
+			const invResp = await fetchWithRetry(invUrl, { headers: booksHeaders(token, orgId) });
+			if (!invResp.ok) return null;
 			const invData = await invResp.json();
 			const invObj = invData && invData.invoice ? invData.invoice : null;
-			if (!invObj) continue;
+			if (!invObj) return null;
 			const invDate = invObj.date || inv.date;
 			const w = weekStart(invDate);
-			if (!w) continue;
+			if (!w) return null;
 			const lines = Array.isArray(invObj.line_items) ? invObj.line_items : [];
 			const qty = lines
 				.filter(li => String(li.item_id || '') === String(itemId))
 				.reduce((sum, li) => sum + Number(li.quantity || 0), 0);
-			if (qty > 0) {
-				weekly.set(w, (weekly.get(w) || 0) + qty);
-			}
+			return { w, qty };
+		});
+		for (const r of results) {
+			if (!r) continue;
+			if (r.qty > 0) weekly.set(r.w, (weekly.get(r.w) || 0) + r.qty);
 		}
 		const pc = data.page_context || {};
 		if (!pc.has_more_page) break;
 		page += 1;
 		// Safety: cap pages to avoid long loops
-		if (page > 20) break;
+		if (page > maxPages) break;
 	}
 	const history = Array.from(weekly.entries())
 		.map(([date, quantity]) => ({ date, quantity }))
@@ -534,8 +591,8 @@ app.post('/suggestions', async (req, res) => {
 	try {
 		try { catalyst.initialize(req); } catch (e) {}
 
-		// Support live fetch toggle via query or body
-		if ((req.query && (req.query.live === '1' || req.query.live === 'true')) || (req.body && (req.body.live === true))) {
+		const wantLive = Boolean((req.query && (req.query.live === '1' || req.query.live === 'true')) || (req.body && req.body.live === true));
+		if (wantLive) {
 			const months = Number(req.query.months || req.body?.months || 6);
 			try {
 				const token = await getZohoAccessToken();
@@ -551,13 +608,11 @@ app.post('/suggestions', async (req, res) => {
 				const fromDate = from.toISOString().slice(0, 10);
 				const toDate = new Date().toISOString().slice(0, 10);
 				const skus = Array.isArray(req.body?.skus) ? req.body.skus : undefined;
-
 				let normalized = [];
 				if (provider === 'books') {
 					const items = await fetchAllBooksItems({ token, orgId, base: booksBase, skus });
 					const limited = items.slice(0, Math.min(items.length, 100));
 					normalized = await withConcurrency(limited, 4, async (it) => {
-						// ensure stock fields by fetching detail if needed
 						let detail = it;
 						if (!Array.isArray(it.locations)) {
 							try { detail = await fetchBooksItemDetail({ token, orgId, base: booksBase, itemId: it.item_id }); } catch(_) {}
@@ -566,16 +621,12 @@ app.post('/suggestions', async (req, res) => {
 						const currentStock = locations.reduce((sum, loc) => sum + Number(loc.location_available_stock || loc.location_stock_on_hand || 0), 0);
 						const sales = await fetchItemSalesHistoryBooks({ token, orgId, base: booksBase, itemId: it.item_id, fromDate, toDate });
 						const trend = calcTrendAndAvgMonthly(sales);
-						const enriched = {
-							...it,
-							stock_on_hand: currentStock,
-							available_stock: currentStock
-						};
+						const enriched = { ...it, stock_on_hand: currentStock, available_stock: currentStock };
 						return normalizeItem(enriched, trend);
 					});
 				} else {
 					const items = await fetchAllInventoryItems({ token, orgId, base: inventoryBase, skus });
-					const limited = items.slice(0, Math.min(items.length, 100)); // pragmatic cap
+					const limited = items.slice(0, Math.min(items.length, 100));
 					normalized = await withConcurrency(limited, 5, async (it) => {
 						const sales = await fetchItemSalesHistory({ token, orgId, base: inventoryBase, itemId: it.item_id, fromDate, toDate });
 						const trend = calcTrendAndAvgMonthly(sales);
@@ -594,8 +645,8 @@ app.post('/suggestions', async (req, res) => {
 				return res.json({ success: true, suggestions, stats, source: 'live' });
 			} catch (liveErr) {
 				console.error('Live fetch error:', liveErr);
-							const detail = (liveErr && liveErr.message) ? String(liveErr.message) : undefined;
-							return res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.', detail });
+				const detail = (liveErr && liveErr.message) ? String(liveErr.message) : undefined;
+				return res.status(502).json({ error: 'Live fetch failed. Check Zoho credentials and scopes.', detail });
 			}
 		}
 
@@ -821,8 +872,17 @@ async function getZcql(app) {
 	return app.zcql();
 }
 
-function nowIso() {
-	return new Date().toISOString();
+// Datastore DATETIME expects 'YYYY-MM-DD HH:mm:ss'
+function dsNow() {
+	const d = new Date();
+	const pad = (n) => String(n).padStart(2, '0');
+	const yyyy = d.getFullYear();
+	const MM = pad(d.getMonth() + 1);
+	const dd = pad(d.getDate());
+	const HH = pad(d.getHours());
+	const mm = pad(d.getMinutes());
+	const ss = pad(d.getSeconds());
+	return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss}`;
 }
 
 function genJobId() {
@@ -861,8 +921,8 @@ app.post('/precompute/start', async (req, res) => {
 			status: 'queued',
 			total_items: total,
 			processed_items: 0,
-			started_at: nowIso(),
-			finished_at: null,
+				started_at: dsNow(),
+				// omit finished_at on insert; set on completion
 			error: null,
 			provider,
 			months,
@@ -870,8 +930,10 @@ app.post('/precompute/start', async (req, res) => {
 		});
 		return res.json({ job_id, total_items: total });
 	} catch (e) {
-		const msg = e && e.message ? String(e.message) : 'precompute start failed';
-		return res.status(502).json({ error: msg });
+		// Improve diagnostics without leaking secrets
+		const msg = e && (e.message || (typeof e === 'string' && e) || (e.toString && e.toString())) ? String(e.message || e) : 'precompute start failed';
+		console.error('Precompute start error:', e);
+		return res.status(502).json({ error: 'precompute start failed', detail: msg });
 	}
 });
 
@@ -915,49 +977,78 @@ app.post('/precompute/run', async (req, res) => {
 		const jobsTbl = await getTableByName(appInst, jobsTableName);
 		await jobsTbl.updateRow({ ROWID: jobROWID, status: 'running' });
 
-		// Fetch items each run and process next slice
-		const items = await fetchAllBooksItems({ token, orgId, base: booksBase, perPage: 200 });
+	// Fetch only the items we need for this chunk to avoid full scans each run
 		const batchSize = Number(req.query.batch || 15);
-		const end = Math.min(items.length, cursor + batchSize);
-		const slice = items.slice(cursor, end);
+		const sliceRaw = await fetchBooksItemsPagedRange({ token, orgId, base: booksBase, start: cursor, count: batchSize, perPage: 200 });
+		// If no items returned from the provider at this cursor, we're at the end — mark done.
+		if (!Array.isArray(sliceRaw) || sliceRaw.length === 0) {
+			const finalize = { ROWID: jobROWID, status: 'done', finished_at: dsNow(), processed_items: total, cursor_pos: total };
+			await jobsTbl.updateRow(finalize);
+			return res.json({ job_id, status: 'done', total_items: total, processed_items: total, progress: 100 });
+		}
+		// Early exclude non-orderable SKUs to skip expensive fetches, but still advance the cursor past them
+		const slice = sliceRaw.filter(it => {
+			const sku = String(it.sku || '').toLowerCase();
+			return !(sku.startsWith('0-') || sku.startsWith('800-') || sku.startsWith('2000-'));
+		});
+		const skippedCount = Math.max(0, sliceRaw.length - slice.length);
+		// Advance cursor/progress for skipped SKUs so we don't get stuck on them
+		if (skippedCount > 0) {
+			processed += skippedCount;
+			cursor += skippedCount;
+		}
 
 		const from = new Date();
 		from.setMonth(from.getMonth() - months);
 		const fromDate = from.toISOString().slice(0, 10);
 		const toDate = new Date().toISOString().slice(0, 10);
 
-		const suggTbl = await getTableByName(appInst, suggTableName);
+	const suggTbl = await getTableByName(appInst, suggTableName);
 		const rowsToInsert = [];
-		for (let i = 0; i < slice.length; i++) {
-			const it = slice[i];
-			// gather detail for stock
-			let detail = it;
-			try { if (!Array.isArray(it.locations)) { detail = await fetchBooksItemDetail({ token, orgId, base: booksBase, itemId: it.item_id }); } } catch (_) {}
-			const locations = Array.isArray(detail?.locations) ? detail.locations : [];
-			const currentStock = locations.reduce((sum, loc) => sum + Number(loc.location_available_stock || loc.location_stock_on_hand || 0), 0);
-			const sales = await fetchItemSalesHistoryBooks({ token, orgId, base: booksBase, itemId: it.item_id, fromDate, toDate });
-			const trend = calcTrendAndAvgMonthly(sales);
-			const enriched = { ...it, stock_on_hand: currentStock, available_stock: currentStock };
-			const norm = normalizeItem(enriched, trend);
-			const suggestion = calculateOrderSuggestions([norm])[0];
-			if (suggestion) {
-				rowsToInsert.push({
-					job_id,
-					sku: suggestion.sku,
-					description: suggestion.description,
-					current_stock: suggestion.currentStock,
-					suggested_quantity: suggestion.suggestedQuantity,
-					priority_level: suggestion.priority,
-					reason: suggestion.reason,
-					estimated_cost: suggestion.estimatedCost,
-					days_until_stockout: suggestion.daysUntilStockout === null ? null : suggestion.daysUntilStockout,
-					computed_at: nowIso()
-				});
-			}
-			processed += 1;
-			cursor += 1;
-			// timebox ~9 seconds per run
-			if (Date.now() - started > 9000) break;
+		const conc = Math.max(1, Math.min(8, Number(req.query.conc || 6)));
+		const groupSize = Math.max(1, Math.min(20, Number(req.query.group || 6)));
+		const invoicePages = Math.max(1, Math.min(20, Number(req.query.invoicePages || 12)));
+		// Micro-batch with timebox to avoid execution timeout
+		for (let gi = 0; gi < slice.length; gi += groupSize) {
+			const grp = slice.slice(gi, gi + groupSize);
+			const results = await withConcurrency(grp, conc, async (it) => {
+				try {
+					let detail = it;
+					// Prefer list-level available_stock when present to avoid detail call
+					if (typeof it.available_stock === 'number') {
+						detail = it;
+					} else if (!Array.isArray(it.locations)) {
+						try { detail = await fetchBooksItemDetail({ token, orgId, base: booksBase, itemId: it.item_id }); } catch (_) {}
+					}
+					const locations = Array.isArray(detail?.locations) ? detail.locations : [];
+					const currentStock = (typeof detail?.available_stock === 'number')
+						? Number(detail.available_stock)
+						: locations.reduce((sum, loc) => sum + Number(loc.location_available_stock || loc.location_stock_on_hand || 0), 0);
+					const sales = await fetchItemSalesHistoryBooks({ token, orgId, base: booksBase, itemId: it.item_id, fromDate, toDate, maxPages: invoicePages });
+					const trend = calcTrendAndAvgMonthly(sales);
+					const enriched = { ...it, stock_on_hand: currentStock, available_stock: currentStock };
+					const norm = normalizeItem(enriched, trend);
+					const suggestion = calculateOrderSuggestions([norm])[0];
+					if (!suggestion) return null;
+					const daysLeft = (suggestion.daysUntilStockout === null || !isFinite(suggestion.daysUntilStockout)) ? null : suggestion.daysUntilStockout;
+					return {
+						job_id,
+						sku: suggestion.sku,
+						description: suggestion.description,
+						current_stock: suggestion.currentStock,
+						suggested_quantity: suggestion.suggestedQuantity,
+						priority_level: suggestion.priority,
+						reason: suggestion.reason,
+						estimated_cost: suggestion.estimatedCost,
+						days_until_stockout: daysLeft,
+						computed_at: dsNow()
+					};
+				} catch (_) { return null; }
+			});
+			for (const r of results) if (r) rowsToInsert.push(r);
+			processed += grp.length;
+			cursor += grp.length;
+			if (Date.now() - started > 8500) break; // leave headroom under platform limit
 		}
 		if (rowsToInsert.length) {
 			await suggTbl.insertRows(rowsToInsert);
@@ -966,7 +1057,7 @@ app.post('/precompute/run', async (req, res) => {
 		const update = { ROWID: jobROWID, processed_items: processed, cursor_pos: cursor };
 		if (processed >= total) {
 			update.status = 'done';
-			update.finished_at = nowIso();
+			update.finished_at = dsNow();
 		}
 		await jobsTbl.updateRow(update);
 
