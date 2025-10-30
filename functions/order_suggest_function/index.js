@@ -13,6 +13,8 @@ app.use(express.json());
 // Structure: { job_id: string, rows: Array<DBRow>, computed_at: iso }
 // DBRow shape aligns with suggestions table columns to reuse mapping logic
 let MEM_SUGG = { job_id: null, rows: [], computed_at: null };
+// Optional in-memory remote JSON URL (admin-set) when env var cannot be configured
+let MEM_REMOTE_URL = null;
 
 // CORS: allow Slate origin (or configured origin)
 // Supports comma-separated list in env. Accepted env names:
@@ -712,11 +714,20 @@ app.get('/suggestions', async (req, res) => {
 				}
 			}
 
-			// 2) Remote JSON (e.g., Catalyst Stratus object URL) if configured via env REMOTE_SUGGESTIONS_URL
-			if (process.env.REMOTE_SUGGESTIONS_URL) {
+			// 2) Remote JSON (e.g., Catalyst Stratus object URL) if configured via env (or in-memory admin-set)
+			const remoteUrlEnv = (
+				process.env.REMOTE_SUGGESTIONS_URL
+				|| process.env.REMOTE_SUGGESTIONS
+				|| process.env.SUGGESTIONS_REMOTE_URL
+				|| process.env.REMOTE_URL
+				|| process.env.REMOTE_SUGG_URL
+				|| process.env.REMOTESUGGESTIONSURL
+				|| process.env.REMOTE__SUGGESTIONS__URL // allow dotted/converted variants if present
+			);
+			const remoteUrl = MEM_REMOTE_URL || remoteUrlEnv;
+			if (remoteUrl) {
 				try {
-					const url = process.env.REMOTE_SUGGESTIONS_URL;
-					const resp = await fetch(url);
+					const resp = await fetch(remoteUrl);
 					if (resp.ok) {
 						const json = await resp.json();
 						const list = Array.isArray(json) ? json : (Array.isArray(json.rows) ? json.rows : []);
@@ -739,7 +750,7 @@ app.get('/suggestions', async (req, res) => {
 								low: suggestions.filter(s => s.priority === 'low').length,
 								totalEstimatedCost: Number(suggestions.reduce((sum, s) => sum + s.estimatedCost, 0).toFixed(2))
 							};
-							return res.json({ success: true, suggestions, stats, source: 'remote', job_id: jobId });
+							return res.json({ success: true, suggestions, stats, source: 'remote', job_id: jobId, remote_url: remoteUrl });
 						}
 					}
 				} catch (remoteErr) {
@@ -1546,6 +1557,44 @@ app.get('/suggestions/cache/status', (_req, res) => {
 	} catch (e) {
 		return res.status(500).json({ error: 'cache status failed' });
 	}
+});
+
+// Clear in-memory cache
+app.post('/suggestions/cache/clear', async (req, res) => {
+	try {
+		if (process.env.ADMIN_TOKEN) {
+			const h = req.headers['x-admin-token'];
+			if (!h || String(h) !== String(process.env.ADMIN_TOKEN)) {
+				return res.status(401).json({ error: 'Unauthorized' });
+			}
+		}
+		MEM_SUGG = { job_id: null, rows: [], computed_at: null };
+		return res.json({ success: true, cleared: true });
+	} catch (e) {
+		return res.status(500).json({ error: 'cache clear failed' });
+	}
+});
+
+// Set/get remote suggestions JSON URL in memory (admin; avoids env var constraints)
+app.post('/suggestions/remote', async (req, res) => {
+	try {
+		if (process.env.ADMIN_TOKEN) {
+			const h = req.headers['x-admin-token'];
+			if (!h || String(h) !== String(process.env.ADMIN_TOKEN)) {
+				return res.status(401).json({ error: 'Unauthorized' });
+			}
+		}
+		const url = String(req.body?.url || '').trim();
+		if (!url) return res.status(400).json({ error: 'url required' });
+		MEM_REMOTE_URL = url;
+		return res.json({ success: true, remote_url: MEM_REMOTE_URL });
+	} catch (e) {
+		return res.status(500).json({ error: 'set remote url failed' });
+	}
+});
+
+app.get('/suggestions/remote/status', (_req, res) => {
+	return res.json({ success: true, remote_url: MEM_REMOTE_URL || null });
 });
 
 // Simple diagnostics for ingestion setup
