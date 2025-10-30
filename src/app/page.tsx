@@ -147,16 +147,16 @@ export default function OrderSuggestionSystem() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 sm:p-6 lg:p-8">
+    <div className="min-h-screen bg-neutral-950 text-neutral-100 p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+          <h1 className="text-3xl font-bold text-neutral-100 mb-2">
             Purchase Order Suggestion System
           </h1>
-          <p className="text-gray-600">
+          <p className="text-neutral-300">
             AI-powered quantity suggestions based on sales trends and stock levels
           </p>
-          <p className="text-sm text-gray-500 mt-1">
+          <p className="text-sm text-neutral-400 mt-1">
             * SKUs starting with 0-, 800-, and 2000- are automatically filtered out
           </p>
         </div>
@@ -168,7 +168,7 @@ export default function OrderSuggestionSystem() {
         ) : (
           <>
             {/* Connection info */}
-            <div className="mb-4 p-3 rounded border border-blue-200 bg-blue-50 text-blue-900">
+            <div className="mb-4 p-3 rounded border border-sky-700 bg-sky-900/30 text-sky-200">
               Using function URL: {functionUrl}
               {health && (
                 <div className="mt-2 text-sm grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -211,35 +211,35 @@ export default function OrderSuggestionSystem() {
 
             {/* Progress indicator */}
             {isRefreshing && (
-              <div className="mb-4 bg-white border border-gray-200 rounded shadow p-3">
+              <div className="mb-4 bg-neutral-900 border border-neutral-800 rounded shadow p-3">
                 <div className="flex items-center justify-between mb-2">
-                  <div className="text-sm text-gray-700">Preparing live suggestions…</div>
-                  <div className="text-sm text-gray-600">{progress}%</div>
+                  <div className="text-sm text-neutral-200">Preparing live suggestions…</div>
+                  <div className="text-sm text-neutral-300">{progress}%</div>
                 </div>
-                <div className="w-full bg-gray-100 rounded h-2 overflow-hidden">
+                <div className="w-full bg-neutral-800 rounded h-2 overflow-hidden">
                   <div className="bg-blue-600 h-2 transition-all" style={{ width: `${progress}%` }} />
                 </div>
-                <div className="text-xs text-gray-500 mt-2">This can take a minute on first run while we aggregate sales from Zoho Books.</div>
+                <div className="text-xs text-neutral-400 mt-2">This can take a minute on first run while we aggregate sales from Zoho Books.</div>
               </div>
             )}
 
             {/* Admin Panel */}
-            <div className="mb-6 bg-white rounded-lg shadow border border-gray-200">
+            <div className="mb-6 bg-neutral-900 rounded-lg shadow border border-neutral-800">
               <button
                 onClick={() => setAdminOpen(v => !v)}
                 className="w-full flex items-center justify-between px-4 py-3 text-left"
               >
-                <span className="font-medium text-gray-900">Admin Panel: Precompute Suggestions</span>
-                <span className="text-sm text-gray-500">{adminOpen ? 'Hide' : 'Show'}</span>
+                <span className="font-medium text-neutral-100">Admin Panel: Precompute Suggestions</span>
+                <span className="text-sm text-neutral-400">{adminOpen ? 'Hide' : 'Show'}</span>
               </button>
               {adminOpen && (
                 <div className="px-4 pb-4">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Months</label>
+                      <label className="block text-sm font-medium text-neutral-200 mb-1">Months</label>
                       <input type="number" min={1} max={24} value={months}
                         onChange={(e) => setMonths(Number(e.target.value))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        className="w-full px-3 py-2 bg-neutral-950 border border-neutral-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-neutral-100" />
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -337,31 +337,31 @@ export default function OrderSuggestionSystem() {
 
             {/* Error banner */}
             {error && (
-              <div className="mb-4 p-3 rounded border border-red-200 bg-red-50 text-red-800">
+              <div className="mb-4 p-3 rounded border border-red-800 bg-red-950/40 text-red-200">
                 {error}
               </div>
             )}
 
             {/* Summary Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-white p-4 rounded-lg shadow">
-                <h3 className="text-sm font-medium text-gray-500">Total Items</h3>
-                <p className="text-2xl font-bold text-gray-900">{filteredSuggestions.length}</p>
+              <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-lg shadow">
+                <h3 className="text-sm font-medium text-neutral-400">Total Items</h3>
+                <p className="text-2xl font-bold text-neutral-100">{filteredSuggestions.length}</p>
               </div>
-              <div className="bg-white p-4 rounded-lg shadow">
-                <h3 className="text-sm font-medium text-gray-500">High Priority</h3>
+              <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-lg shadow">
+                <h3 className="text-sm font-medium text-neutral-400">High Priority</h3>
                 <p className="text-2xl font-bold text-red-600">
                   {filteredSuggestions.filter(s => s.priority === 'high').length}
                 </p>
               </div>
-              <div className="bg-white p-4 rounded-lg shadow">
-                <h3 className="text-sm font-medium text-gray-500">Medium Priority</h3>
+              <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-lg shadow">
+                <h3 className="text-sm font-medium text-neutral-400">Medium Priority</h3>
                 <p className="text-2xl font-bold text-yellow-600">
                   {filteredSuggestions.filter(s => s.priority === 'medium').length}
                 </p>
               </div>
-              <div className="bg-white p-4 rounded-lg shadow">
-                <h3 className="text-sm font-medium text-gray-500">Total Cost</h3>
+              <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-lg shadow">
+                <h3 className="text-sm font-medium text-neutral-400">Total Cost</h3>
                 <p className="text-2xl font-bold text-green-600">
                   ${totalEstimatedCost.toFixed(2)}
                 </p>
@@ -369,28 +369,28 @@ export default function OrderSuggestionSystem() {
             </div>
 
             {/* Filters */}
-            <div className="bg-white p-4 rounded-lg shadow mb-6">
+            <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-lg shadow mb-6">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-neutral-200 mb-1">
                     Search SKU or Description
                   </label>
                   <input
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-neutral-950 border border-neutral-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="Enter SKU or description..."
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-neutral-200 mb-1">
                     Priority Filter
                   </label>
                   <select
                     value={priorityFilter}
                     onChange={(e) => setPriorityFilter(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-neutral-950 border border-neutral-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">All Priorities</option>
                     <option value="high">High Priority</option>

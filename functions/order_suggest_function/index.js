@@ -9,6 +9,11 @@ const fetch = require('node-fetch');
 const app = express();
 app.use(express.json());
 
+// Ephemeral in-memory suggestion cache to avoid Data Store inserts when needed
+// Structure: { job_id: string, rows: Array<DBRow>, computed_at: iso }
+// DBRow shape aligns with suggestions table columns to reuse mapping logic
+let MEM_SUGG = { job_id: null, rows: [], computed_at: null };
+
 // CORS: allow Slate origin (or configured origin)
 // Supports comma-separated list in env. Accepted env names:
 // - ALLOWED_ORIGIN (preferred)
@@ -680,6 +685,68 @@ app.get('/suggestions', async (req, res) => {
 		const months = Number(req.query && req.query.months || 6);
 		const live = String(req.query && req.query.live || '');
 		if (!live || live === '0' || live.toLowerCase() === 'false') {
+			// 1) In-memory cache (no Data Store usage)
+			if (Array.isArray(MEM_SUGG.rows) && MEM_SUGG.rows.length > 0) {
+				try {
+					const list = MEM_SUGG.rows;
+					const suggestions = list.map(row => ({
+						sku: row.sku,
+						description: row.description,
+						currentStock: Number(row.current_stock || 0),
+						suggestedQuantity: Number(row.suggested_quantity || 0),
+						priority: row.priority_level || row.priority || 'low',
+						reason: row.reason || '',
+						estimatedCost: Number(row.estimated_cost || 0),
+						daysUntilStockout: row.days_until_stockout === null || row.days_until_stockout === undefined ? Infinity : Number(row.days_until_stockout)
+					}));
+					const stats = {
+						totalSuggestions: suggestions.length,
+						high: suggestions.filter(s => s.priority === 'high').length,
+						medium: suggestions.filter(s => s.priority === 'medium').length,
+						low: suggestions.filter(s => s.priority === 'low').length,
+						totalEstimatedCost: Number(suggestions.reduce((sum, s) => sum + s.estimatedCost, 0).toFixed(2))
+					};
+					return res.json({ success: true, suggestions, stats, source: 'cache', job_id: MEM_SUGG.job_id, cached_at: MEM_SUGG.computed_at });
+				} catch (cacheErr) {
+					// fall through to DB attempt
+				}
+			}
+
+			// 2) Remote JSON (e.g., Catalyst Stratus object URL) if configured via env REMOTE_SUGGESTIONS_URL
+			if (process.env.REMOTE_SUGGESTIONS_URL) {
+				try {
+					const url = process.env.REMOTE_SUGGESTIONS_URL;
+					const resp = await fetch(url);
+					if (resp.ok) {
+						const json = await resp.json();
+						const list = Array.isArray(json) ? json : (Array.isArray(json.rows) ? json.rows : []);
+						const jobId = json.job_id || 'remote';
+						if (list.length) {
+							const suggestions = list.map(row => ({
+								sku: row.sku,
+								description: row.description,
+								currentStock: Number(row.current_stock || row.currentStock || 0),
+								suggestedQuantity: Number(row.suggested_quantity || row.suggestedQuantity || 0),
+								priority: row.priority_level || row.priority || 'low',
+								reason: row.reason || '',
+								estimatedCost: Number(row.estimated_cost || row.estimatedCost || 0),
+								daysUntilStockout: row.days_until_stockout === null || row.days_until_stockout === undefined ? Infinity : Number(row.days_until_stockout)
+							}));
+							const stats = {
+								totalSuggestions: suggestions.length,
+								high: suggestions.filter(s => s.priority === 'high').length,
+								medium: suggestions.filter(s => s.priority === 'medium').length,
+								low: suggestions.filter(s => s.priority === 'low').length,
+								totalEstimatedCost: Number(suggestions.reduce((sum, s) => sum + s.estimatedCost, 0).toFixed(2))
+							};
+							return res.json({ success: true, suggestions, stats, source: 'remote', job_id: jobId });
+						}
+					}
+				} catch (remoteErr) {
+					// ignore and proceed to DB attempt
+				}
+			}
+
 			try {
 				const appInst = catalyst.initialize(req);
 				const { suggestionsTable, jobsTable } = getEnvTableNames();
@@ -889,6 +956,18 @@ function genJobId() {
 	return `job_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
 }
 
+function genIngestId() {
+	return `ing_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+}
+
+function getAggTableNames() {
+	const aggregatesTable = process.env.AGGREGATES_TABLE;
+	const stockTable = process.env.STOCK_TABLE;
+	if (!aggregatesTable) throw new Error('Missing Data Store env var: AGGREGATES_TABLE');
+	if (!stockTable) throw new Error('Missing Data Store env var: STOCK_TABLE');
+	return { aggregatesTable, stockTable };
+}
+
 // Start a precompute job
 app.post('/precompute/start', async (req, res) => {
 	try {
@@ -1092,6 +1171,430 @@ app.get('/precompute/status', async (req, res) => {
 		return res.json({ job_id, status: job.status, total_items: total, processed_items: processed, progress, started_at: job.started_at, finished_at: job.finished_at });
 	} catch (e) {
 		const msg = e && e.message ? String(e.message) : 'precompute status failed';
+		return res.status(502).json({ error: msg });
+	}
+});
+
+/**
+ * ===== CSV/Aggregates Ingestion =====
+ * Endpoints:
+ * - POST /ingest/aggregates { rows:[{ sku, month_start, qty_sold, revenue?, invoices_count? }], source?, provider? }
+ *   -> stores monthly aggregates (no upsert; grouped by ingest_id). Returns { ingest_id, inserted }
+ * - POST /ingest/stock { rows:[{ sku, current_stock, cost_price? }], snapshot_at? }
+ *   -> stores stock snapshots. Returns { ingest_id, inserted }
+ * - POST /recompute/from-aggregates { months?:number, ingest_id?:string, skus?:string[] }
+ *   -> builds order suggestions using latest aggregates and latest stock snapshots, writes to SUGGESTIONS_TABLE and JOBS_TABLE
+ */
+
+function toMonthStartStr(d) {
+	// Return 'YYYY-MM-01 00:00:00'
+	const date = (typeof d === 'string') ? new Date(d) : (d instanceof Date ? d : new Date());
+	const y = date.getFullYear();
+	const m = String(date.getMonth() + 1).padStart(2, '0');
+	return `${y}-${m}-01 00:00:00`;
+}
+
+app.post('/ingest/aggregates', async (req, res) => {
+	try {
+		if (process.env.ADMIN_TOKEN) {
+			const h = req.headers['x-admin-token'];
+			if (!h || String(h) !== String(process.env.ADMIN_TOKEN)) {
+				return res.status(401).json({ error: 'Unauthorized' });
+			}
+		}
+		const appInst = catalyst.initialize(req);
+		const { aggregatesTable } = getAggTableNames();
+		const tbl = await getTableByName(appInst, aggregatesTable);
+		const source = String(req.body?.source || 'upload');
+		const provider = String(req.body?.provider || getSourceProvider());
+		const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+		if (!rows || !rows.length) return res.status(400).json({ error: 'rows[] required' });
+		const ingest_id = genIngestId();
+		let prepared = rows.map(r => ({
+			sku: String(r.sku || '').trim(),
+			month_start: toMonthStartStr(r.month_start || r.month || r.date || r.period_start),
+			qty_sold: Number(r.qty_sold || r.quantity || 0),
+			revenue: r.revenue !== undefined ? Number(r.revenue) : null,
+			invoices_count: r.invoices_count !== undefined ? Number(r.invoices_count) : null,
+			provider,
+			source,
+			ingest_id,
+			computed_at: dsNow()
+		})).filter(r => r.sku);
+		// Exclude non-orderable SKUs (0-, 800-, 2000-)
+		prepared = filterOrderableSKUs(prepared);
+		if (!prepared.length) return res.status(400).json({ error: 'No valid rows after parsing' });
+		// Insert in chunks to avoid payload limits
+		const chunkSize = 200;
+		let inserted = 0;
+		for (let i = 0; i < prepared.length; i += chunkSize) {
+			const chunk = prepared.slice(i, i + chunkSize).map(r => {
+				const c = {};
+				for (const [k,v] of Object.entries(r)) {
+					if (v === null || v === undefined) continue;
+					if (typeof v === 'number' && Number.isNaN(v)) continue;
+					c[k] = v;
+				}
+				return c;
+			});
+			await tbl.insertRows(chunk);
+			inserted += chunk.length;
+		}
+		return res.json({ success: true, ingest_id, inserted });
+	} catch (e) {
+		const msg = e && e.message ? String(e.message) : 'ingest aggregates failed';
+		const detail = e && (e.stack || (e.toString && e.toString()) || null);
+		console.error('ingest aggregates error:', e);
+		return res.status(502).json({ error: msg, detail });
+	}
+});
+
+app.post('/ingest/stock', async (req, res) => {
+	try {
+		if (process.env.ADMIN_TOKEN) {
+			const h = req.headers['x-admin-token'];
+			if (!h || String(h) !== String(process.env.ADMIN_TOKEN)) {
+				return res.status(401).json({ error: 'Unauthorized' });
+			}
+		}
+		const appInst = catalyst.initialize(req);
+		const { stockTable } = getAggTableNames();
+		const tbl = await getTableByName(appInst, stockTable);
+		const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+		if (!rows || !rows.length) return res.status(400).json({ error: 'rows[] required' });
+		const ingest_id = genIngestId();
+		const snapshot_at = req.body?.snapshot_at ? String(req.body.snapshot_at) : null;
+		let prepared = rows.map(r => ({
+			sku: String(r.sku || '').trim(),
+			current_stock: Number(r.current_stock || r.available_stock || r.stock_on_hand || 0),
+			cost_price: r.cost_price !== undefined ? Number(r.cost_price) : (r.unit_cost !== undefined ? Number(r.unit_cost) : null),
+			snapshot_at: snapshot_at || dsNow(),
+			ingest_id
+		})).filter(r => r.sku);
+		// Exclude non-orderable SKUs (0-, 800-, 2000-)
+		prepared = filterOrderableSKUs(prepared);
+		if (!prepared.length) return res.status(400).json({ error: 'No valid rows after parsing' });
+		const chunkSize = 200;
+		let inserted = 0;
+		for (let i = 0; i < prepared.length; i += chunkSize) {
+			const chunk = prepared.slice(i, i + chunkSize).map(r => {
+				const c = {};
+				for (const [k,v] of Object.entries(r)) {
+					if (v === null || v === undefined) continue;
+					if (typeof v === 'number' && Number.isNaN(v)) continue;
+					c[k] = v;
+				}
+				return c;
+			});
+			await tbl.insertRows(chunk);
+			inserted += chunk.length;
+		}
+		return res.json({ success: true, ingest_id, inserted });
+	} catch (e) {
+		const msg = e && e.message ? String(e.message) : 'ingest stock failed';
+		const detail = e && (e.stack || (e.toString && e.toString()) || null);
+		console.error('ingest stock error:', e);
+		return res.status(502).json({ error: msg, detail });
+	}
+});
+
+app.post('/recompute/from-aggregates', async (req, res) => {
+	try {
+		if (process.env.ADMIN_TOKEN) {
+			const h = req.headers['x-admin-token'];
+			if (!h || String(h) !== String(process.env.ADMIN_TOKEN)) {
+				return res.status(401).json({ error: 'Unauthorized' });
+			}
+		}
+		const appInst = catalyst.initialize(req);
+		const { aggregatesTable, stockTable } = getAggTableNames();
+		const { suggestionsTable, jobsTable } = getEnvTableNames();
+		const zcql = await getZcql(appInst);
+		const months = Number(req.body?.months || req.query?.months || 6);
+		const providedIngestId = req.body?.ingest_id || req.query?.ingest_id || '';
+		const skusFilter = Array.isArray(req.body?.skus) ? req.body.skus.map(s => String(s)) : null;
+
+		// Determine ingest_id to use (latest if not provided)
+		let ingestIdToUse = String(providedIngestId || '');
+		if (!ingestIdToUse) {
+			const latestRow = await zcql.executeZCQLQuery(`SELECT ingest_id, computed_at FROM ${aggregatesTable} ORDER BY computed_at DESC`);
+			if (!Array.isArray(latestRow) || latestRow.length === 0) {
+				return res.status(404).json({ error: 'No aggregates available. Ingest first.' });
+			}
+			ingestIdToUse = latestRow[0][aggregatesTable].ingest_id;
+		}
+
+		// Fetch aggregates for this ingest and window
+		const from = new Date();
+		from.setMonth(from.getMonth() - months);
+		const fromStr = toMonthStartStr(from);
+		let aggRows = await zcql.executeZCQLQuery(`SELECT * FROM ${aggregatesTable} WHERE ingest_id='${ingestIdToUse}' AND month_start >= '${fromStr}'`);
+		aggRows = Array.isArray(aggRows) ? aggRows.map(r => r[aggregatesTable]) : [];
+		if (!aggRows.length) return res.status(404).json({ error: 'No aggregates in requested window' });
+
+		// Optional SKUs filter
+		if (Array.isArray(skusFilter) && skusFilter.length) {
+			const set = new Set(skusFilter.map(s => s.toLowerCase()));
+			aggRows = aggRows.filter(r => r.sku && set.has(String(r.sku).toLowerCase()));
+		}
+
+		// Group by SKU
+		const bySku = new Map();
+		const isExcluded = (sku) => {
+			const s = String(sku || '').toLowerCase();
+			return s.startsWith('0-') || s.startsWith('800-') || s.startsWith('2000-');
+		};
+		for (const r of aggRows) {
+			const sku = String(r.sku || '').trim();
+			if (!sku) continue;
+			if (isExcluded(sku)) continue;
+			if (!bySku.has(sku)) bySku.set(sku, []);
+			bySku.get(sku).push({ month_start: r.month_start, qty_sold: Number(r.qty_sold || 0) });
+		}
+		if (bySku.size === 0) return res.status(404).json({ error: 'No matching SKUs in aggregates' });
+
+		// Helper to compute trend from monthly points
+		function trendFromMonthly(points) {
+			const sorted = points.slice().sort((a,b) => String(a.month_start).localeCompare(String(b.month_start)));
+			const quantities = sorted.map(p => Number(p.qty_sold || 0));
+			const total = quantities.reduce((a,b) => a + b, 0);
+			const monthsN = Math.max(1, sorted.length);
+			const avgMonthlySales = total / monthsN;
+			const split = Math.max(1, Math.floor(sorted.length / 2));
+			const older = quantities.slice(0, split);
+			const recent = quantities.slice(split);
+			const olderAvg = older.length ? older.reduce((a,b)=>a+b,0)/older.length : avgMonthlySales;
+			const recentAvg = recent.length ? recent.reduce((a,b)=>a+b,0)/recent.length : olderAvg;
+			const change = olderAvg ? (recentAvg - olderAvg) / olderAvg : 0;
+			const salesTrend = change > 0.1 ? 'increasing' : (change < -0.1 ? 'decreasing' : 'stable');
+			return { salesTrend, avgMonthlySales };
+		}
+
+		// Fetch latest stock snapshot per SKU (one query per SKU; cap concurrency)
+		const stockTbl = await getTableByName(appInst, stockTable);
+		const suggTbl = await getTableByName(appInst, suggestionsTable);
+		const jobsTbl = await getTableByName(appInst, jobsTable);
+
+		const skuList = Array.from(bySku.keys());
+		const limiter = Math.min(8, Math.max(1, Number(req.body?.conc || 6)));
+		const suggestions = [];
+		let idx = 0;
+		const workers = new Array(limiter).fill(0).map(async () => {
+			while (true) {
+				const i = idx++; if (i >= skuList.length) break;
+				const sku = skuList[i];
+				try {
+					const rows = await zcql.executeZCQLQuery(`SELECT * FROM ${stockTable} WHERE sku='${sku}' ORDER BY snapshot_at DESC`);
+					const stockRow = (Array.isArray(rows) && rows.length) ? rows[0][stockTable] : null;
+					const currentStock = Number(stockRow?.current_stock || 0);
+					const unitCost = Number(stockRow?.cost_price || 0);
+					const trend = trendFromMonthly(bySku.get(sku));
+					const norm = normalizeItem({ sku, stock_on_hand: currentStock, available_stock: currentStock, purchase_rate: unitCost, cost_price: unitCost, name: sku }, { salesTrend: trend.salesTrend, avgMonthlySales: trend.avgMonthlySales, lastSale: null });
+					const suggestion = calculateOrderSuggestions([norm])[0];
+					if (!suggestion) continue;
+					const daysLeft = (suggestion.daysUntilStockout === null || !isFinite(suggestion.daysUntilStockout)) ? null : suggestion.daysUntilStockout;
+					suggestions.push({
+						sku: suggestion.sku,
+						description: suggestion.description,
+						current_stock: suggestion.currentStock,
+						suggested_quantity: suggestion.suggestedQuantity,
+						priority_level: suggestion.priority,
+						reason: suggestion.reason,
+						estimated_cost: suggestion.estimatedCost,
+						days_until_stockout: daysLeft,
+						computed_at: dsNow()
+					});
+				} catch (_) { /* skip */ }
+			}
+		});
+		await Promise.all(workers);
+
+		// Persist suggestions with an aggregate job record
+		const job_id = `agg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+		// Insert suggestions in chunks, attaching job_id
+		const chunkSize = 200;
+		let inserted = 0;
+		for (let i = 0; i < suggestions.length; i += chunkSize) {
+			const chunk = suggestions.slice(i, i + chunkSize).map(r => ({ ...r, job_id }));
+			if (chunk.length) {
+				await suggTbl.insertRows(chunk);
+				inserted += chunk.length;
+			}
+		}
+		// Record job as done
+		await jobsTbl.insertRow({
+			job_id,
+			status: 'done',
+			total_items: skuList.length,
+			processed_items: skuList.length,
+			started_at: dsNow(),
+			finished_at: dsNow(),
+			error: null,
+			provider: 'aggregates',
+			months,
+			cursor_pos: skuList.length
+		});
+
+		const progress = skuList.length ? 100 : 0;
+		return res.json({ success: true, job_id, total_items: skuList.length, inserted, progress, source: 'aggregates', ingest_id: ingestIdToUse });
+	} catch (e) {
+		const msg = e && e.message ? String(e.message) : 'recompute from aggregates failed';
+		console.error('recompute from aggregates error:', e);
+		return res.status(502).json({ error: msg });
+	}
+});
+
+// Ingest precomputed suggestions (CSV baseline) directly into suggestions table
+app.post('/suggestions/ingest', async (req, res) => {
+	try {
+		if (process.env.ADMIN_TOKEN) {
+			const h = req.headers['x-admin-token'];
+			if (!h || String(h) !== String(process.env.ADMIN_TOKEN)) {
+				return res.status(401).json({ error: 'Unauthorized' });
+			}
+		}
+		const appInst = catalyst.initialize(req);
+		const { suggestionsTable, jobsTable } = getEnvTableNames();
+		const suggTbl = await getTableByName(appInst, suggestionsTable);
+		const jobsTbl = await getTableByName(appInst, jobsTable);
+		const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+		const months = Number(req.body?.months || 6);
+		if (!rows || !rows.length) return res.status(400).json({ error: 'rows[] required' });
+		const job_id = `csv_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+		const prepared = rows.map(r => {
+			const sku = String(r.sku || r.SKU || '').trim();
+			const description = r.description || r.Description || '';
+			const current_stock = Number(r.current_stock ?? r.CurrentStock ?? 0);
+			const suggested_quantity = Number(r.suggested_quantity ?? r.SuggestedQty ?? 0);
+			const priority_level = (r.priority_level || r.Priority || 'medium');
+			const reason = (r.reason || 'CSV ingestion baseline');
+			const estimated_cost = Number(r.estimated_cost ?? 0);
+			const days_until_stockout = (r.days_until_stockout === null || r.days_until_stockout === undefined) ? null : Number(r.days_until_stockout);
+			return { sku, description, current_stock, suggested_quantity, priority_level, reason, estimated_cost, days_until_stockout };
+		}).filter(r => r.sku && r.suggested_quantity > 0)
+		  .filter(r => {
+			  const s = r.sku.toLowerCase();
+			  return !(s.startsWith('0-') || s.startsWith('800-') || s.startsWith('2000-'));
+		  })
+		  .map(r => ({ ...r, job_id, computed_at: dsNow() }));
+
+		// Insert in chunks
+		const chunkSize = 200;
+		let inserted = 0;
+		for (let i = 0; i < prepared.length; i += chunkSize) {
+			const chunk = prepared.slice(i, i + chunkSize);
+			await suggTbl.insertRows(chunk);
+			inserted += chunk.length;
+		}
+
+		// Record job
+		await jobsTbl.insertRow({ job_id, status: 'done', total_items: prepared.length, processed_items: prepared.length, started_at: dsNow(), finished_at: dsNow(), error: null, provider: 'csv', months, cursor_pos: prepared.length });
+		return res.json({ success: true, job_id, inserted, total_items: prepared.length });
+	} catch (e) {
+		const msg = e && e.message ? String(e.message) : 'suggestions ingest failed';
+		const detail = e && (e.stack || (e.toString && e.toString()) || null);
+		console.error('suggestions ingest error:', e);
+		return res.status(502).json({ error: msg, detail });
+	}
+});
+
+// Upload suggestions into ephemeral in-memory cache (no Data Store usage)
+app.post('/suggestions/cache', async (req, res) => {
+	try {
+		if (process.env.ADMIN_TOKEN) {
+			const h = req.headers['x-admin-token'];
+			if (!h || String(h) !== String(process.env.ADMIN_TOKEN)) {
+				return res.status(401).json({ error: 'Unauthorized' });
+			}
+		}
+		const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+		const months = Number(req.body?.months || 6);
+		if (!rows || !rows.length) return res.status(400).json({ error: 'rows[] required' });
+		const job_id = `cache_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+		const prepared = rows.map(r => {
+			const sku = String(r.sku || r.SKU || '').trim();
+			const description = r.description || r.Description || '';
+			const current_stock = Number(r.current_stock ?? r.CurrentStock ?? 0);
+			const suggested_quantity = Number(r.suggested_quantity ?? r.SuggestedQty ?? 0);
+			const priority_level = (r.priority_level || r.Priority || 'medium');
+			const reason = (r.reason || 'CSV ingestion baseline');
+			const estimated_cost = Number(r.estimated_cost ?? 0);
+			const days_until_stockout = (r.days_until_stockout === null || r.days_until_stockout === undefined) ? null : Number(r.days_until_stockout);
+			return { sku, description, current_stock, suggested_quantity, priority_level, reason, estimated_cost, days_until_stockout };
+		}).filter(r => r.sku && r.suggested_quantity > 0)
+		  .filter(r => {
+			  const s = r.sku.toLowerCase();
+			  return !(s.startsWith('0-') || s.startsWith('800-') || s.startsWith('2000-'));
+		  })
+		  .map(r => ({ ...r, job_id, computed_at: dsNow(), provider: 'csv' }));
+
+		MEM_SUGG = { job_id, rows: prepared, computed_at: dsNow(), months };
+		return res.json({ success: true, job_id, inserted: prepared.length, total_items: prepared.length, source: 'cache' });
+	} catch (e) {
+		const msg = e && e.message ? String(e.message) : 'suggestions cache ingest failed';
+		const detail = e && (e.stack || (e.toString && e.toString()) || null);
+		console.error('suggestions cache ingest error:', e);
+		return res.status(502).json({ error: msg, detail });
+	}
+});
+
+// Observe ephemeral cache status
+app.get('/suggestions/cache/status', (_req, res) => {
+	try {
+		const count = Array.isArray(MEM_SUGG.rows) ? MEM_SUGG.rows.length : 0;
+		return res.json({ success: true, job_id: MEM_SUGG.job_id, count, cached_at: MEM_SUGG.computed_at });
+	} catch (e) {
+		return res.status(500).json({ error: 'cache status failed' });
+	}
+});
+
+// Simple diagnostics for ingestion setup
+app.get('/ingest/diag', async (req, res) => {
+	try {
+		if (process.env.ADMIN_TOKEN) {
+			const h = req.headers['x-admin-token'];
+			if (!h || String(h) !== String(process.env.ADMIN_TOKEN)) {
+				return res.status(401).json({ error: 'Unauthorized' });
+			}
+		}
+		const appInst = catalyst.initialize(req);
+		const out = {
+			hasAggTableEnv: Boolean(process.env.AGGREGATES_TABLE),
+			hasStockTableEnv: Boolean(process.env.STOCK_TABLE),
+			hasJobsTableEnv: Boolean(process.env.JOBS_TABLE),
+			hasSuggTableEnv: Boolean(process.env.SUGGESTIONS_TABLE),
+			aggregatesTable: process.env.AGGREGATES_TABLE || null,
+			stockTable: process.env.STOCK_TABLE || null,
+			suggestionsTable: process.env.SUGGESTIONS_TABLE || null,
+			jobsTable: process.env.JOBS_TABLE || null,
+			canOpenAggTable: null,
+			canOpenStockTable: null,
+			missingAggColumns: [],
+			missingStockColumns: []
+		};
+		try { await getTableByName(appInst, out.aggregatesTable); out.canOpenAggTable = true; } catch (e) { out.canOpenAggTable = String(e && e.message || e || 'fail'); }
+		try { await getTableByName(appInst, out.stockTable); out.canOpenStockTable = true; } catch (e) { out.canOpenStockTable = String(e && e.message || e || 'fail'); }
+		const zcql = await getZcql(appInst);
+		const testCols = async (tbl, cols) => {
+			const missing = [];
+			for (const c of cols) {
+				try {
+					await zcql.executeZCQLQuery(`SELECT ${c} FROM ${tbl}`);
+				} catch (e) {
+					missing.push(c);
+				}
+			}
+			return missing;
+		};
+		if (out.canOpenAggTable === true) {
+			out.missingAggColumns = await testCols(out.aggregatesTable, ['sku','month_start','qty_sold','revenue','provider','source','ingest_id','computed_at']);
+		}
+		if (out.canOpenStockTable === true) {
+			out.missingStockColumns = await testCols(out.stockTable, ['sku','current_stock','cost_price','snapshot_at','ingest_id']);
+		}
+		return res.json(out);
+	} catch (e) {
+		const msg = e && e.message ? String(e.message) : 'diag failed';
 		return res.status(502).json({ error: msg });
 	}
 });

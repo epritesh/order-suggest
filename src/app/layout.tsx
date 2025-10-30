@@ -27,9 +27,17 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased bg-neutral-950 text-neutral-100`}>
+        <header className="border-b border-neutral-800 bg-neutral-950">
+          <div className="max-w-7xl mx-auto flex items-center gap-3 px-4 py-3">
+            {/* Place pantera-logo.png in /public at the repo root */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/pantera-logo.png" alt="Pantera" className="h-8 w-8 object-contain" />
+            <div className="text-sm sm:text-base">
+              <span className="font-semibold">Pantera</span> · Order Suggestion System
+            </div>
+          </div>
+        </header>
         {children}
       </body>
     </html>
